@@ -98,6 +98,13 @@ grep -F -- "--enable-decoder=aac" "$AAC_CONFIG" >/dev/null || {
   echo "aac-af config does not enable AAC decoder" >&2; exit 1;
 }
 
+grep -F -- "--enable-encoder=aac" "$AAC_CONFIG" >/dev/null || {
+  echo "aac-af config does not enable AAC encoder" >&2; exit 1;
+}
+grep -F -- "--enable-muxer=mp4" "$AAC_CONFIG" >/dev/null || {
+  echo "aac-af config does not enable MP4 muxer" >&2; exit 1;
+}
+
 # AAC decode path uses the same audio filter graph as MP3.
 if ! grep -F -- "--enable-filter=asetnsamples" "$AAC_CONFIG" >/dev/null; then
   echo "--enable-filter=asetnsamples" >> "$AAC_CONFIG"
@@ -151,7 +158,7 @@ for f in "$OUTPUT_FRONT" "$OUTPUT_FACTORY" "$OUTPUT_WASM" "$BRIDGE_JS"; do
   [[ -s "$f" ]] || { echo "Missing npm dependency output: $f" >&2; exit 1; }
 done
 
-log "Bundling everything into index.html (app v1.22)"
+log "Bundling everything into index.html (app v1.23)"
 python3 "$PROJECT_DIR/scripts/bundle.py" \
   --template "$PROJECT_DIR/app-template.html" \
   --obsolete-front "$OBSOLETE_FRONT" \
@@ -168,7 +175,7 @@ python3 "$PROJECT_DIR/scripts/bundle.py" \
 
 log "Writing build information"
 {
-  echo "libav.js dual-input offline build v1.22"
+  echo "libav.js dual-input offline build v1.23"
   echo "libav.js: $LIBAV_TAG"
   echo "Emscripten: $EMSDK_VERSION"
   echo "MP3/Opus/FLAC/WAV input: locally built upstream obsolete runtime"

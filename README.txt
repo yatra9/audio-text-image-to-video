@@ -377,3 +377,22 @@ Output: index.html
 File picker fix:
 - Changed audio input accept from audio/* to audio/*,.aac
 - Windows file dialogs may not map raw .aac into audio/*, so the extension is now explicit.
+
+
+v1.23 note
+----------
+Performance/output update:
+- Global frame rate changed from 30 fps to 5 fps.
+- VideoEncoder capability selection is now:
+    H.264 (hardwareAcceleration=prefer-hardware) -> VP9 -> VP8
+- H.264 path outputs MP4:
+    WebCodecs H.264 + libav.js native AAC encoder + MP4 muxer.
+- VP9/VP8 fallback keeps the known-good WebM path:
+    WebCodecs VP9/VP8 + libopus + WebM.
+- The MP4 path instantiates a separate aac-af libav.js instance for AAC encode
+  and MP4 muxing. This avoids disturbing the already-working input decoder.
+- The existing EAGAIN handling remains unchanged.
+
+Important:
+WebCodecs can request/prefer hardware acceleration, but its support query does
+not prove that a particular browser/driver actually selected hardware.
