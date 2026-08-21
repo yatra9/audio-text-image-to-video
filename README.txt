@@ -490,3 +490,82 @@ Fix:
 - WebM and MKV packet muxing now compares packet timestamps and writes them in
   time order (PTS/DTS-based interleaving).
 - MP4 keeps the previous 5fps mux path unchanged.
+
+
+v1.30 note
+----------
+Sparse-video compatibility fix based on inspecting an actual generated MKV.
+
+Observed in the test file:
+- Video packets existed at 0, 5, 10, ... seconds and were keyframes.
+- Packet durations were missing/approximately 1 ms instead of the slide duration.
+- Audio continued to about 258 s while video packets stopped at about 195 s.
+
+Fixes:
+1. WebM/MKV sparse video now carries the intended slide duration outside
+   WebCodecs and writes that duration explicitly into each libav.js video packet.
+2. Sparse encoders are flushed after each slide frame. There are very few frames,
+   so this is inexpensive and avoids long-gap buffering/drop behavior.
+3. After audio reaches EOF, a final catch-up pass guarantees sparse video frames
+   extend to the final audio timestamp.
+4. Console diagnostics report planned/encoded frame counts and video/audio end
+   timestamps for WebM and MKV.
+5. MP4 remains the existing 5 fps path.
+
+
+v1.31 note
+----------
+Two fixes:
+
+1. Preview after changing output format
+   detectCapabilities() resizes the preview canvas, which clears it. The format
+   selector now immediately rerenders the active page after capability detection.
+
+2. Mobile MKV memory safety
+   Desktop MKV keeps the audio-copy path.
+   Mobile MKV now automatically uses:
+       sparse video (1 slide = 1 frame)
+       + Opus audio transcode
+       + Matroska mux
+   This avoids the high-risk same-WASM demux+codecpar-copy+mux path that produced
+   RuntimeError: memory access out of bounds on mobile devices.
+
+MP4 remains 5 fps + H.264/AAC.
+WebM remains sparse video + Opus.
+
+
+v1.32 note
+----------
+VLC sparse-video compatibility fix based on inspecting the v1.31 MKV.
+
+The generated MKV now correctly contains video frames through the full audio
+duration, but ffprobe showed:
+    r_frame_rate=1000/1
+    time_base=1/1000
+
+This happened because sparse WebM/MKV removed framerate from the WebCodecs /
+bridge stream configuration entirely.
+
+v1.32 keeps framerate=5 as NOMINAL STREAM METADATA for WebM/MKV while still
+encoding exactly one frame per slide. This does not return to 5 encoded frames
+per second; it only gives players/muxers a sane decoder timing hint.
+
+MP4 is unchanged at real 5 fps.
+
+
+v1.33 note
+----------
+MKV now uses exception-based fallback on every device.
+
+Primary attempt:
+  sparse video (1 slide = 1 frame) + original audio packet copy + Matroska
+
+If that throws any exception:
+  - the failed makeMkvCopyVideo path aborts its writable
+  - its finally block closes/terminates the failed libav.js instance
+  - makeVideo catches the exception
+  - a new makeTranscodedVideo run opens a fresh writable and fresh libav.js
+    instances
+  - it restarts from the beginning as sparse video + Opus + Matroska
+
+So mobile devices are no longer forced into safe mode before trying audio copy.

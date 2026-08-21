@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>スライド + 音声 → WebM / MP4 / MKV v1.29</title>
+  <title>スライド + 音声 → WebM / MP4 / MKV v1.33</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 14px 48px; }
@@ -38,7 +38,7 @@
   </style>
 </head>
 <body>
-  <h1>複数ページのスライド + 音声 → WebM / MP4 / MKV v1.29</h1>
+  <h1>複数ページのスライド + 音声 → WebM / MP4 / MKV v1.33</h1>
   <p>各ページを「画像のみ / テキストのみ / 背景画像 + テキスト」から選び、表示秒数を指定して音声に合わせてローテーションできます。</p>
 
   <div class="panel">
@@ -242,6 +242,7 @@ ratioFromImageButton.addEventListener('click', async () => {
 });
 outputFormatInput.addEventListener('change', async () => {
   await detectCapabilities();
+  await renderSelectedPreview({ silent: true });
   if (audioInput.files?.[0]) await probeSelectedAudio();
 });
 audioInput.addEventListener('change', probeSelectedAudio);
@@ -682,8 +683,8 @@ async function detectCapabilities() {
   const formatLabel = selectedFormat === 'mp4'
     ? 'MP4 / AAC / 5fps'
     : selectedFormat === 'mkv'
-      ? 'MKV / 音声copy優先 / 1スライド1フレーム'
-      : 'WebM / Opus / 1スライド1フレーム';
+      ? 'MKV / 音声copy優先→失敗時Opus / 1スライド1フレーム (公称5fps)'
+      : 'WebM / Opus / 1スライド1フレーム (公称5fps)';
   capabilityEl.textContent = capability.ok
     ? `✓ 利用可能\n端末: ${mobile ? 'スマホ/モバイル' : 'デスクトップ'}\n解像度: ${target.width}×${target.height}\n映像: ${selectedVideo.label}\n出力: ${formatLabel}`
     : `✗ 実行できません\n- ${reasons.join('\n- ')}`;
@@ -717,14 +718,14 @@ function getInputLibAVFactory(file) {
   }
 
   if (aacFamily) {
-    console.info('[v1.29] input variant = aac-af / native frontend loader');
+    console.info('[v1.33] input variant = aac-af / native frontend loader');
     return getAACLibAVFactory('aac-af-input');
   }
 
   if (!window.__LIBAV_MP3_FACTORY_URL__ || !window.__LIBAV_MP3_WASM_URL__) {
     throw new Error('埋め込み済み obsolete runtime がありません。');
   }
-  console.info('[v1.29] input variant = obsolete / native frontend loader');
+  console.info('[v1.33] input variant = obsolete / native frontend loader');
   return {
     front: window.LibAVInput54,
     toImport: window.__LIBAV_MP3_FACTORY_URL__,
@@ -783,7 +784,7 @@ function formatCaughtError(error) {
 
 async function openAudioInput(libav, name, file) {
   const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
-  console.info('[v1.29 audio head]', {
+  console.info('[v1.33 audio head]', {
     fileName: file.name,
     fileSize: file.size,
     hex: Array.from(head).map(v => v.toString(16).padStart(2, '0')).join(' ')
@@ -836,7 +837,7 @@ async function probeSelectedAudio() {
       mp3DecoderByName = `lookup-error: ${String(e)}`;
     }
 
-    console.info('[v1.29 libav diagnostic]', {
+    console.info('[v1.33 libav diagnostic]', {
       inputFrontVER: inputFactory?.front?.VER ?? null,
       inputFrontCONFIG: inputFactory?.front?.CONFIG ?? null,
       outputFrontVER: window.LibAVOutput?.VER ?? null,
@@ -853,7 +854,7 @@ async function probeSelectedAudio() {
     const selectedLower = (file?.name || '').toLowerCase();
     if (selectedLower.endsWith('.mp3') && (!mp3InputFormat || (!mp3DecoderByName && !mp3floatDecoderByName))) {
       throw new Error(
-        `MP3 runtime self-check failed v1.29: demuxer=${mp3InputFormat}, decoder=${mp3DecoderByName}, mp3float=${mp3floatDecoderByName}`
+        `MP3 runtime self-check failed v1.33: demuxer=${mp3InputFormat}, decoder=${mp3DecoderByName}, mp3float=${mp3floatDecoderByName}`
       );
     }
     inputName = makeInputName(file);
@@ -1045,10 +1046,26 @@ function comparePacketsByTime(libav, a, aTbNum, aTbDen, b, bTbNum, bTbDen) {
   const bStream = b.stream_index ?? 0;
   return aStream - bStream;
 }
+function setPacketDurationUs(libav, packet, durationUs, tbNum, tbDen) {
+  const safeUs = Math.max(1, Math.round(durationUs || 0));
+  const ticks = Math.max(1, Math.round(safeUs * tbDen / tbNum / 1e6));
+  setPacketI64(libav, packet, 'duration', ticks);
+  packet.time_base_num = tbNum;
+  packet.time_base_den = tbDen;
+  return packet;
+}
 
 async function makeVideo(args) {
   if (args.outputContainer === 'mkv') {
-    return await makeMkvCopyVideo(args);
+    try {
+      console.info('[v1.33] MKV primary mode = sparse video + audio copy');
+      args.onProgress?.('MKV: 音声copyを試行中...');
+      return await makeMkvCopyVideo(args);
+    } catch (copyError) {
+      console.warn('[v1.33] MKV audio-copy path failed; retrying with Opus transcode', copyError);
+      args.onProgress?.(`MKV: 音声copyに失敗したためOpusで再試行中...\n${copyError?.message || copyError}`);
+      return await makeTranscodedVideo({ ...args, mkvFallbackFromCopyError: copyError });
+    }
   }
   return await makeTranscodedVideo(args);
 }
@@ -1081,8 +1098,15 @@ async function makeMkvCopyVideo({ pageSpecs, audioFile, outputHandle, videoChoic
       if (!desc) throw new Error(`MKV runtimeに映像codec descriptor ${videoDescName} がありません。`);
     }
 
-    const videoConfig = { ...(videoChoice?.config || {}), codec: videoChoice?.codec, width, height };
-    delete videoConfig.framerate; // VFR: keep microsecond time base in bridge.
+    const videoConfig = {
+      ...(videoChoice?.config || {}),
+      codec: videoChoice?.codec,
+      width,
+      height,
+      framerate: FPS
+    };
+    // Sparse VFR: framerate is only a nominal stream/decoder hint.
+    // We still encode exactly one frame per slide.
     if (!videoConfig.codec) throw new Error('MKV映像コーデック設定がありません。');
 
     const videoStreamInfo = await LibAVWebCodecsBridge.configToVideoStream(libav, videoConfig);
@@ -1095,10 +1119,15 @@ async function makeMkvCopyVideo({ pageSpecs, audioFile, outputHandle, videoChoic
     const videoReader = videoOut.getReader();
     const audioReader = audioOut.getReader();
     const audioClock = new AudioClock();
+    const sparseDurationByTimestamp = new Map();
+    let sparseEncodedCount = 0;
     let pipelineError = null;
 
     const videoEncoder = new VideoEncoder({
-      output: (chunk, metadata) => videoOut.push({ chunk, metadata }),
+      output: (chunk, metadata) => {
+        sparseEncodedCount++;
+        videoOut.push({ chunk, metadata });
+      },
       error: e => { pipelineError = e; videoOut.push(null); }
     });
     videoEncoder.configure(videoConfig);
@@ -1145,39 +1174,62 @@ async function makeMkvCopyVideo({ pageSpecs, audioFile, outputHandle, videoChoic
     const videoProducer = (async () => {
       let pageSeq = 0;
       let timestampUs = 0;
+
+      const encodeUntil = async (targetUs, finalPass) => {
+        while (timestampUs < targetUs) {
+          const page = preparedPages[pageSeq % preparedPages.length];
+          const pageIndex = pageSeq % preparedPages.length;
+          const nominalDurationUs = Math.max(1, Math.round(page.duration * 1e6));
+
+          if (!finalPass && timestampUs + nominalDurationUs > targetUs) break;
+          const durationUs = finalPass
+            ? Math.min(nominalDurationUs, Math.max(1, targetUs - timestampUs))
+            : nominalDurationUs;
+          if (durationUs <= 0) break;
+
+          while (videoEncoder.encodeQueueSize > 4) await waitForDequeue(videoEncoder);
+          await renderPageIntoCanvas(sourceCanvas, page, width, height, page.bitmap);
+          sparseDurationByTimestamp.set(timestampUs, durationUs);
+          const frame = new VideoFrame(sourceCanvas, { timestamp: timestampUs });
+          videoEncoder.encode(frame, { keyFrame: true });
+          frame.close();
+
+          // Sparse mode has only one frame per slide. Flush each one so a browser
+          // encoder cannot retain/drop a long-gap frame internally.
+          await videoEncoder.flush();
+
+          timestampUs += durationUs;
+          pageSeq++;
+          onProgress(`MKV: 映像 ${pageSeq}フレーム / ${formatSeconds(timestampUs / 1e6)} / ページ${pageIndex + 1}`);
+          await new Promise(requestAnimationFrame);
+        }
+      };
+
       try {
         while (true) {
           if (audioClock.error) throw audioClock.error;
           const observed = audioClock.endUs;
-
-          while (timestampUs < observed) {
-            const page = preparedPages[pageSeq % preparedPages.length];
-            const pageIndex = pageSeq % preparedPages.length;
-            const nominalDurationUs = Math.max(1, Math.round(page.duration * 1e6));
-
-            // Before EOF, wait until the full slide interval is known.
-            if (!audioClock.done && timestampUs + nominalDurationUs > observed) break;
-            const durationUs = audioClock.done
-              ? Math.min(nominalDurationUs, Math.max(1, observed - timestampUs))
-              : nominalDurationUs;
-            if (durationUs <= 0) break;
-
-            while (videoEncoder.encodeQueueSize > 4) await waitForDequeue(videoEncoder);
-            await renderPageIntoCanvas(sourceCanvas, page, width, height, page.bitmap);
-            const frame = new VideoFrame(sourceCanvas, { timestamp: timestampUs, duration: durationUs });
-            videoEncoder.encode(frame, { keyFrame: true });
-            frame.close();
-
-            timestampUs += durationUs;
-            pageSeq++;
-            onProgress(`MKV: 映像 ${pageSeq}フレーム / ${formatSeconds(timestampUs / 1e6)} / ページ${pageIndex + 1}`);
-            await new Promise(requestAnimationFrame);
-          }
+          await encodeUntil(observed, audioClock.done);
           if (audioClock.done) break;
           await audioClock.waitForChange(observed);
         }
+
+        // Final catch-up is intentional even though the loop above normally did it.
+        // It guarantees video reaches the final demuxed audio timestamp.
+        const finalAudioUs = audioClock.endUs;
+        await encodeUntil(finalAudioUs, true);
+        if (timestampUs + 1000 < finalAudioUs) {
+          throw new Error(`MKV sparse video ended early: video=${timestampUs}us audio=${finalAudioUs}us`);
+        }
+
         await videoEncoder.flush();
         videoEncoder.close();
+        console.info('[v1.33 MKV sparse diagnostic]', {
+          plannedFrames: pageSeq,
+          encodedFrames: sparseEncodedCount,
+          videoEndUs: timestampUs,
+          audioEndUs: finalAudioUs
+        });
         videoOut.push(null);
       } catch (e) {
         pipelineError = e;
@@ -1204,9 +1256,12 @@ async function makeMkvCopyVideo({ pageSpecs, audioFile, outputHandle, videoChoic
     const nextVideoPacket = async () => {
       const { done, value } = await videoReader.read();
       if (done) return null;
-      return await LibAVWebCodecsBridge.encodedVideoChunkToPacket(
+      const packet = await LibAVWebCodecsBridge.encodedVideoChunkToPacket(
         libav, value.chunk, value.metadata, videoStreamInfo, 0
       );
+      const durationUs = sparseDurationByTimestamp.get(value.chunk.timestamp) || value.chunk.duration || 1;
+      sparseDurationByTimestamp.delete(value.chunk.timestamp);
+      return setPacketDurationUs(libav, packet, durationUs, videoStreamInfo[1], videoStreamInfo[2]);
     };
     const nextAudioPacket = async () => {
       const { done, value } = await audioReader.read();
@@ -1265,7 +1320,7 @@ async function makeMkvCopyVideo({ pageSpecs, audioFile, outputHandle, videoChoic
   }
 }
 
-async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outputContainer, width, height, onProgress }) {
+async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outputContainer, width, height, onProgress, mkvFallbackFromCopyError = null }) {
   let inputLibav = null, outputLibav = null, inputName = null, inputMode = null, directWriter = null;
   let muxer = null, muxPacketPtr = null, preparedPages = null;
   let decoder = null, inputFmtCtx = null;
@@ -1274,7 +1329,14 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
   try {
     const writable = await outputHandle.createWritable();
     directWriter = new DirectFileWriter(writable);
-    onProgress('ページ素材を準備中...');
+    if (outputContainer === 'mkv' && mkvFallbackFromCopyError) {
+      console.info('[v1.33] MKV fallback started with fresh writable/libav instances', {
+        originalError: mkvFallbackFromCopyError?.message || String(mkvFallbackFromCopyError)
+      });
+    }
+    onProgress(outputContainer === 'mkv' && mkvFallbackFromCopyError
+      ? 'MKV: Opus再エンコードで再作成中...'
+      : 'ページ素材を準備中...');
     preparedPages = await preparePages(pageSpecs);
     const sourceCanvas = new OffscreenCanvas(width, height);
     let renderedPageIndex = -1;
@@ -1297,7 +1359,7 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
       const h264DescCheck = typeof outputLibav.avcodec_descriptor_get_by_name === 'function'
         ? await outputLibav.avcodec_descriptor_get_by_name('h264')
         : 0;
-      console.info('[v1.29 MP4 runtime diagnostic]', { aacEncoderCheck, h264DescCheck });
+      console.info('[v1.33 MP4 runtime diagnostic]', { aacEncoderCheck, h264DescCheck });
       if (!aacEncoderCheck || !h264DescCheck) {
         throw new Error(`MP4 runtime self-check failed: aacEncoder=${aacEncoderCheck}, h264Descriptor=${h264DescCheck}`);
       }
@@ -1319,8 +1381,9 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
       width,
       height
     };
-    if (outputContainer === 'mp4') videoConfig.framerate = FPS;
-    else delete videoConfig.framerate;
+    // All outputs advertise a sane nominal 5fps stream rate.
+    // WebM/MKV remain sparse: only one encoded frame per slide is produced.
+    videoConfig.framerate = FPS;
     if (!videoConfig.codec) throw new Error('映像コーデック設定がありません。');
     const videoStreamInfo = await LibAVWebCodecsBridge.configToVideoStream(outputLibav, videoConfig);
 
@@ -1329,13 +1392,18 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
     const videoReader = videoOut.getReader();
     const audioReader = audioOut.getReader();
     const audioClock = new AudioClock();
+    const sparseDurationByTimestamp = new Map();
+    let sparseEncodedCount = 0;
     let pipelineError = null;
 
     let resolveAudioReady, rejectAudioReady;
     const audioReady = new Promise((resolve, reject) => { resolveAudioReady = resolve; rejectAudioReady = reject; });
 
     const videoEncoder = new VideoEncoder({
-      output: (chunk, metadata) => videoOut.push({ chunk, metadata }),
+      output: (chunk, metadata) => {
+        if (outputContainer !== 'mp4') sparseEncodedCount++;
+        videoOut.push({ chunk, metadata });
+      },
       error: e => { pipelineError = e; videoOut.push(null); }
     });
     videoEncoder.configure(videoConfig);
@@ -1486,30 +1554,33 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
           const observed = audioClock.endUs;
 
           if (sparseVideo) {
-            while (sparseTimestampUs < observed) {
-              const page = preparedPages[sparsePageSeq % preparedPages.length];
-              const index = sparsePageSeq % preparedPages.length;
-              const nominalDurationUs = Math.max(1, Math.round(page.duration * 1e6));
-              if (!audioClock.done && sparseTimestampUs + nominalDurationUs > observed) break;
-              const durationUs = audioClock.done
-                ? Math.min(nominalDurationUs, Math.max(1, observed - sparseTimestampUs))
-                : nominalDurationUs;
-              if (durationUs <= 0) break;
+            const encodeSparseUntil = async (targetUs, finalPass) => {
+              while (sparseTimestampUs < targetUs) {
+                const page = preparedPages[sparsePageSeq % preparedPages.length];
+                const index = sparsePageSeq % preparedPages.length;
+                const nominalDurationUs = Math.max(1, Math.round(page.duration * 1e6));
+                if (!finalPass && sparseTimestampUs + nominalDurationUs > targetUs) break;
+                const durationUs = finalPass
+                  ? Math.min(nominalDurationUs, Math.max(1, targetUs - sparseTimestampUs))
+                  : nominalDurationUs;
+                if (durationUs <= 0) break;
 
-              while (videoEncoder.encodeQueueSize > 4) await waitForDequeue(videoEncoder);
-              await renderPageIntoCanvas(sourceCanvas, page, width, height, page.bitmap);
-              renderedPageIndex = index;
-              const frame = new VideoFrame(sourceCanvas, {
-                timestamp: sparseTimestampUs,
-                duration: durationUs
-              });
-              videoEncoder.encode(frame, { keyFrame: true });
-              frame.close();
-              sparseTimestampUs += durationUs;
-              sparsePageSeq++;
-              onProgress(`処理中... 映像 ${sparsePageSeq}フレーム / ${formatSeconds(sparseTimestampUs / 1e6)} / 表示ページ ${index + 1}`);
-              await new Promise(requestAnimationFrame);
-            }
+                while (videoEncoder.encodeQueueSize > 4) await waitForDequeue(videoEncoder);
+                await renderPageIntoCanvas(sourceCanvas, page, width, height, page.bitmap);
+                renderedPageIndex = index;
+                sparseDurationByTimestamp.set(sparseTimestampUs, durationUs);
+                const frame = new VideoFrame(sourceCanvas, { timestamp: sparseTimestampUs });
+                videoEncoder.encode(frame, { keyFrame: true });
+                frame.close();
+                await videoEncoder.flush();
+
+                sparseTimestampUs += durationUs;
+                sparsePageSeq++;
+                onProgress(`処理中... 映像 ${sparsePageSeq}フレーム / ${formatSeconds(sparseTimestampUs / 1e6)} / 表示ページ ${index + 1}`);
+                await new Promise(requestAnimationFrame);
+              }
+            };
+            await encodeSparseUntil(observed, audioClock.done);
           } else {
             while (frameIndex * frameDurationUs < observed) {
               while (videoEncoder.encodeQueueSize > 8) await waitForDequeue(videoEncoder);
@@ -1534,6 +1605,34 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
           if (audioClock.done) break;
           await audioClock.waitForChange(observed);
         }
+
+        if (sparseVideo) {
+          const finalAudioUs = audioClock.endUs;
+          while (sparseTimestampUs < finalAudioUs) {
+            const page = preparedPages[sparsePageSeq % preparedPages.length];
+            const index = sparsePageSeq % preparedPages.length;
+            const nominalDurationUs = Math.max(1, Math.round(page.duration * 1e6));
+            const durationUs = Math.min(nominalDurationUs, Math.max(1, finalAudioUs - sparseTimestampUs));
+            await renderPageIntoCanvas(sourceCanvas, page, width, height, page.bitmap);
+            sparseDurationByTimestamp.set(sparseTimestampUs, durationUs);
+            const frame = new VideoFrame(sourceCanvas, { timestamp: sparseTimestampUs });
+            videoEncoder.encode(frame, { keyFrame: true });
+            frame.close();
+            await videoEncoder.flush();
+            sparseTimestampUs += durationUs;
+            sparsePageSeq++;
+          }
+          if (sparseTimestampUs + 1000 < finalAudioUs) {
+            throw new Error(`${outputContainer.toUpperCase()} sparse video ended early: video=${sparseTimestampUs}us audio=${finalAudioUs}us`);
+          }
+          console.info(outputContainer === 'mkv' ? '[v1.33 MKV mobile sparse diagnostic]' : '[v1.33 WebM sparse diagnostic]', {
+            plannedFrames: sparsePageSeq,
+            encodedFrames: sparseEncodedCount,
+            videoEndUs: sparseTimestampUs,
+            audioEndUs: finalAudioUs
+          });
+        }
+
         await videoEncoder.flush();
         videoEncoder.close();
         videoOut.push(null);
@@ -1545,8 +1644,16 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
     })();
 
     const audioInfo = await audioReady;
-    const outputName = outputContainer === 'mp4' ? 'output.mp4' : 'output.webm';
-    const muxFormat = outputContainer === 'mp4' ? 'mp4' : 'webm';
+    const outputName = outputContainer === 'mp4'
+      ? 'output.mp4'
+      : outputContainer === 'mkv'
+        ? 'output.mkv'
+        : 'output.webm';
+    const muxFormat = outputContainer === 'mp4'
+      ? 'mp4'
+      : outputContainer === 'mkv'
+        ? 'matroska'
+        : 'webm';
     await outputLibav.mkwriterdev(outputName);
     outputLibav.onwrite = (name, position, data) => { if (name === outputName) directWriter.enqueue(position, data); };
     const [ofc, , pb] = await outputLibav.ff_init_muxer(
@@ -1560,9 +1667,15 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
     const nextVideoPacket = async () => {
       const { done, value } = await videoReader.read();
       if (done) return null;
-      return await LibAVWebCodecsBridge.encodedVideoChunkToPacket(
+      const packet = await LibAVWebCodecsBridge.encodedVideoChunkToPacket(
         outputLibav, value.chunk, value.metadata, videoStreamInfo, 0
       );
+      if (outputContainer !== 'mp4') {
+        const durationUs = sparseDurationByTimestamp.get(value.chunk.timestamp) || value.chunk.duration || 1;
+        sparseDurationByTimestamp.delete(value.chunk.timestamp);
+        setPacketDurationUs(outputLibav, packet, durationUs, videoStreamInfo[1], videoStreamInfo[2]);
+      }
+      return packet;
     };
     const nextAudioPacket = async () => {
       const { done, value } = await audioReader.read();
@@ -1631,7 +1744,13 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
       width, height,
       codecLabel: videoChoice?.label || videoChoice?.codec || 'unknown',
       audioCodecLabel: audioInfo.codecLabel,
-      containerLabel: outputContainer === 'mp4' ? 'MP4 (H.264 + AAC)' : 'WebM (VFR + Opus)',
+      containerLabel: outputContainer === 'mp4'
+        ? 'MP4 (H.264 + AAC)'
+        : outputContainer === 'mkv'
+          ? (mkvFallbackFromCopyError
+              ? 'MKV (VFR + Opus / audio-copy fallback)'
+              : 'MKV (VFR + Opus)')
+          : 'WebM (VFR + Opus)',
       videoRateLabel: outputContainer === 'mp4' ? `${FPS}fps` : '1スライド1フレーム',
       durationUs: audioClock.endUs
     };
