@@ -44,7 +44,7 @@ def main():
 
     setup = '''<script>
 window.__LIBAV_OFFLINE_EMBEDDED__ = true;
-window.__APP_VERSION__ = "v1.33";
+window.__APP_VERSION__ = "v1.38";
 
 window.__libavB64Bytes = function(s) {
   const raw = atob(s);
@@ -90,7 +90,7 @@ window.__LIBAV_OUTPUT_IDENTITY__ = {
   CONFIG: window.LibAVOutput && window.LibAVOutput.CONFIG
 };
 if (window.LibAVInput54 === window.LibAVOutput) {
-  throw new Error("v1.33 runtime isolation failed: input/output LibAV frontend objects are identical");
+  throw new Error("v1.38 runtime isolation failed: input/output LibAV frontend objects are identical");
 }
 window.__LIBAV_OUTPUT_FACTORY_URL__ = window.__libavBlobURL("__OUT_FACTORY__", "text/javascript");
 window.__LIBAV_OUTPUT_WASM_URL__ = window.__libavBlobURL("__OUT_WASM__", "application/wasm");

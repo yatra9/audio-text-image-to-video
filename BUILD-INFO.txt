@@ -3,9 +3,9 @@ libav.js: v5.4.6.1.1
 Emscripten: 3.1.55
 MP3/Opus/FLAC/WAV input: locally built upstream obsolete runtime
 AAC/ADTS/M4A input variant: aac-af
-local obsolete WASM bytes: 2257644
-aac-af WASM bytes: 1699544
-Final HTML bytes: 9712390
+local obsolete WASM bytes: 2257685
+aac-af WASM bytes: 1699585
+Final HTML bytes: 9713956
 
 IMPORTANT LICENSE NOTE
 libav.js/FFmpeg components are LGPL-licensed. If you distribute the compiled HTML,

@@ -569,3 +569,137 @@ If that throws any exception:
   - it restarts from the beginning as sparse video + Opus + Matroska
 
 So mobile devices are no longer forced into safe mode before trying audio copy.
+
+
+v1.34 note
+----------
+Matroska sparse-video fix is now applied in the locally built FFmpeg source.
+
+Root cause:
+- libav.js ff_copyin_packet DOES copy duration/durationhi into AVPacket.
+- libav.js ff_write_multi DOES pass that packet through FFmpeg.
+- FFmpeg 6.1.1 libavformat/matroskaenc.c normally writes BlockDuration for
+  non-subtitle packets only when Track DefaultDuration is already known and the
+  packet duration differs from it.
+- The WebCodecs/libav.js sparse-video stream has no Track DefaultDuration, so
+  a valid 5-second AVPacket.duration was omitted from the Matroska file.
+- Browsers infer display duration from PTS gaps; VLC does not reliably do that.
+
+Build-time patch:
+- For VIDEO packets with duration > 0 and no Track DefaultDuration,
+  write MATROSKA_ID_BLOCKDURATION explicitly.
+- If DefaultDuration exists, retain FFmpeg's original mismatch rule.
+- Subtitle behavior is unchanged.
+
+The app remains one encoded frame per slide for WebM/MKV; this version does NOT
+switch to 1 fps.
+
+MKV audio-copy fallback:
+- The Opus fallback now uses a fresh local obsolete runtime as the output muxer,
+  so it also receives the patched FFmpeg Matroska muxer.
+
+
+v1.35 note
+----------
+Further VLC/Matroska compatibility fix based on output(3).mkv.
+
+Confirmed in output(3).mkv:
+- The v1.34 FFmpeg BlockDuration patch WORKS.
+- Video packets now report duration=5.000000 seconds.
+- However the video stream still reports:
+    r_frame_rate=1000/1
+    avg_frame_rate=0/0
+    time_base=1/1000
+  which is not a sane nominal frame rate for a five-second still slide.
+
+FFmpeg 6.1.1 matroskaenc.c writes Track DefaultDuration from AVStream
+avg_frame_rate/r_frame_rate. libav.js did not expose those AVStream fields.
+
+v1.35 build patch:
+- Add rational AVStream accessors for avg_frame_rate and r_frame_rate to
+  libav.js funcs.json before building the local runtimes.
+- Before Matroska/WebM header writing, set both rates to the inverse of the
+  first slide duration. A 5-second slide becomes 1/5 fps.
+- Keep the v1.34 explicit BlockDuration FFmpeg patch, so slides with durations
+  different from the default still get their own BlockDuration.
+- Encoding remains ONE FRAME PER SLIDE.
+
+UI:
+- Page type order is now:
+    Text only -> Image only -> Background image + text
+- Default page type is Text only.
+
+
+v1.36 note
+----------
+Build fix for the AVStream frame-rate accessor patch.
+
+libav.js v5.4.6.1.1 uses the legacy funcs.json layout:
+    {
+      "functions": ...,
+      "accessors": [
+        ...
+        ["AVStream", [...]]
+      ]
+    }
+
+v1.35 incorrectly assumed the newer sectioned layout:
+    data["avformat"]["accessors"]
+
+That caused:
+    KeyError: 'avformat'
+
+v1.36 detects both layouts:
+- legacy top-level accessors (v5.4.6.1.1)
+- newer sectioned avformat.accessors
+
+It then adds avg_frame_rate and r_frame_rate as rational AVStream accessors and
+verifies both fields exist before continuing the build.
+
+All v1.35 MKV fixes and the page-type order/default change are retained.
+
+
+v1.37 note
+----------
+WebM now uses the same locally built/patched FFmpeg runtime as MKV.
+
+v1.36 already attempted to set AVStream avg_frame_rate/r_frame_rate for WebM,
+but WebM muxing still used the separate LibAVOutput runtime. That meant the
+FFmpeg matroskaenc.c BlockDuration patch was not guaranteed to be present.
+
+v1.37:
+- WebM output uses a fresh local obsolete runtime instance.
+- That runtime contains BOTH:
+  1. the libav.js AVStream avg_frame_rate/r_frame_rate accessor patch
+  2. the FFmpeg matroskaenc.c explicit video BlockDuration patch
+- MKV fallback continues to use the same patched local runtime.
+- MP4 remains on the AAC-capable local aac-af runtime.
+
+Therefore WebM and MKV now share the same patched Matroska/WebM muxer behavior.
+The one-frame-per-slide encoding design is retained.
+
+
+v1.38 note
+----------
+Fixes the v1.36/v1.37 wasm-ld failure.
+
+Problem:
+Adding avg_frame_rate/r_frame_rate to funcs.json made Emscripten request
+AVStream_* accessor symbols that libav.js v5.4.6.1.1 does not generate in its
+C accessor layer. The result was:
+    symbol exported via --export not found: AVStream_avg_frame_rate_...
+    symbol exported via --export not found: AVStream_r_frame_rate_...
+
+New approach:
+- REMOVE the custom AVStream accessor patch completely.
+- Use AVCodecParameters.framerate, which v5.4.6.1.1 already exposes.
+- Before WebM/MKV mux initialization, set video codecpar framerate to the
+  inverse of the first slide duration (5 sec => 1/5 fps).
+- Patch FFmpeg 6.1.1 matroskaenc.c so Track DefaultDuration selection is:
+    AVStream avg_frame_rate
+    -> AVStream r_frame_rate
+    -> AVCodecParameters framerate
+- Keep the explicit BlockDuration patch for individual slide durations.
+
+This applies to both WebM and MKV through the locally patched runtimes.
+One-frame-per-slide remains unchanged.

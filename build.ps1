@@ -104,7 +104,7 @@ try {
         exit 0
     }
 
-    Write-Host "libav.js AAC/MP3 single-HTML builder v1.33" -ForegroundColor Green
+    Write-Host "libav.js AAC/MP3 single-HTML builder v1.38" -ForegroundColor Green
     Write-Host ("Project: " + $ProjectDir)
 
     if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {

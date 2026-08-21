@@ -206,6 +206,103 @@ fi
 
 make extract
 
+log "Patching FFmpeg Matroska muxer for explicit sparse-video BlockDuration"
+MATROSKA_SRC="$LIBAV_DIR/build/ffmpeg-${FFMPEG_VERSION}/libavformat/matroskaenc.c"
+[[ -f "$MATROSKA_SRC" ]] || {
+  echo "Matroska muxer source not found: $MATROSKA_SRC" >&2
+  exit 1
+}
+
+python3 - "$MATROSKA_SRC" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+
+old_duration = """    if (duration > 0 && (par->codec_type == AVMEDIA_TYPE_SUBTITLE ||
+        /* If the packet's duration is inconsistent with the default duration,
+         * add an explicit duration element. */
+        track->default_duration_high > 0 &&
+        duration != track->default_duration_high &&
+        duration != track->default_duration_low))
+        ebml_writer_add_uint(&writer, MATROSKA_ID_BLOCKDURATION, duration);
+"""
+
+new_duration = """    if (duration > 0 && (par->codec_type == AVMEDIA_TYPE_SUBTITLE ||
+        /* libav.js/WebCodecs sparse video may have no Track DefaultDuration.
+         * In that case preserve AVPacket.duration explicitly as BlockDuration.
+         * Otherwise keep FFmpeg's original inconsistent-with-default rule. */
+        (par->codec_type == AVMEDIA_TYPE_VIDEO &&
+         (track->default_duration_high == 0 ||
+          (duration != track->default_duration_high &&
+           duration != track->default_duration_low)))))
+        ebml_writer_add_uint(&writer, MATROSKA_ID_BLOCKDURATION, duration);
+"""
+
+if new_duration in text:
+    print("Matroska sparse-duration patch already applied")
+elif old_duration in text:
+    text = text.replace(old_duration, new_duration, 1)
+    print("Applied Matroska sparse-duration patch")
+else:
+    raise SystemExit("Expected FFmpeg matroskaenc.c BlockDuration condition was not found; refusing to build unpatched.")
+
+old_rate = """        frame_rate = (AVRational){ 0, 1 };
+        if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0)
+            frame_rate = st->avg_frame_rate;
+        else if (st->r_frame_rate.num > 0 && st->r_frame_rate.den > 0)
+            frame_rate = st->r_frame_rate;
+
+        if (frame_rate.num > 0)
+            mkv_write_default_duration(track, pb, av_inv_q(frame_rate));
+"""
+
+new_rate = """        frame_rate = (AVRational){ 0, 1 };
+        if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0)
+            frame_rate = st->avg_frame_rate;
+        else if (st->r_frame_rate.num > 0 && st->r_frame_rate.den > 0)
+            frame_rate = st->r_frame_rate;
+        else if (par->framerate.num > 0 && par->framerate.den > 0)
+            /* libav.js v5.4 exposes AVCodecParameters.framerate but not the
+             * AVStream avg/r-frame-rate setters. Use codecpar as a safe
+             * DefaultDuration source for sparse WebCodecs video. */
+            frame_rate = par->framerate;
+
+        if (frame_rate.num > 0)
+            mkv_write_default_duration(track, pb, av_inv_q(frame_rate));
+"""
+
+if new_rate in text:
+    print("Matroska codecpar-framerate fallback patch already applied")
+elif old_rate in text:
+    text = text.replace(old_rate, new_rate, 1)
+    print("Applied Matroska codecpar-framerate fallback patch")
+else:
+    raise SystemExit("Expected FFmpeg matroskaenc.c frame-rate selection block was not found; refusing to build unpatched.")
+
+path.write_text(text, encoding="utf-8")
+patched = path.read_text(encoding="utf-8")
+required = [
+    "libav.js/WebCodecs sparse video may have no Track DefaultDuration",
+    "track->default_duration_high == 0",
+    "MATROSKA_ID_BLOCKDURATION, duration",
+    "par->framerate.num > 0",
+    "frame_rate = par->framerate"
+]
+if not all(x in patched for x in required):
+    raise SystemExit("Matroska sparse-video patch verification failed.")
+PY
+
+grep -F -- "libav.js/WebCodecs sparse video may have no Track DefaultDuration" "$MATROSKA_SRC" >/dev/null || {
+  echo "Matroska sparse-duration patch is missing after patch step." >&2
+  exit 1
+}
+grep -F -- "frame_rate = par->framerate" "$MATROSKA_SRC" >/dev/null || {
+  echo "Matroska codecpar-framerate fallback patch is missing after patch step." >&2
+  exit 1
+}
+
 JOBS="$(nproc 2>/dev/null || echo 2)"
 log "Building local obsolete runtime with asetnsamples"
 rm -f   "dist/libav-${LIBAV_VERSION}-obsolete.js"   "dist/libav-${LIBAV_VERSION}-obsolete.wasm.js"   "dist/libav-${LIBAV_VERSION}-obsolete.wasm.wasm"

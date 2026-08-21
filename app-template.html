@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>スライド + 音声 → WebM / MP4 / MKV v1.33</title>
+  <title>スライド + 音声 → WebM / MP4 / MKV v1.38</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 14px 48px; }
@@ -38,7 +38,7 @@
   </style>
 </head>
 <body>
-  <h1>複数ページのスライド + 音声 → WebM / MP4 / MKV v1.33</h1>
+  <h1>複数ページのスライド + 音声 → WebM / MP4 / MKV v1.38</h1>
   <p>各ページを「画像のみ / テキストのみ / 背景画像 + テキスト」から選び、表示秒数を指定して音声に合わせてローテーションできます。</p>
 
   <div class="panel">
@@ -334,8 +334,8 @@ function addPage(initial = {}) {
       <div>
         <label>ページ種類</label>
         <select data-field="type">
+          <option value="text" selected>テキストのみ</option>
           <option value="image">画像のみ</option>
-          <option value="text">テキストのみ</option>
           <option value="imageText">背景画像 + テキスト</option>
         </select>
       </div>
@@ -691,6 +691,18 @@ async function detectCapabilities() {
   updateMakeButton();
 }
 
+function getObsoleteLibAVFactory(label = 'obsolete') {
+  if (!window.LibAVInput54 || !window.__LIBAV_MP3_FACTORY_URL__ || !window.__LIBAV_MP3_WASM_URL__) {
+    throw new Error('埋め込み済み obsolete runtime がありません。');
+  }
+  return {
+    front: window.LibAVInput54,
+    toImport: window.__LIBAV_MP3_FACTORY_URL__,
+    wasmurl: window.__LIBAV_MP3_WASM_URL__,
+    label
+  };
+}
+
 function getAACLibAVFactory(label = 'aac-af') {
   if (!window.LibAVInput54 || !window.__LIBAV_AAC_FACTORY_URL__ || !window.__LIBAV_AAC_WASM_URL__) {
     throw new Error('埋め込み済み AAC runtime がありません。');
@@ -718,14 +730,14 @@ function getInputLibAVFactory(file) {
   }
 
   if (aacFamily) {
-    console.info('[v1.33] input variant = aac-af / native frontend loader');
+    console.info('[v1.38] input variant = aac-af / native frontend loader');
     return getAACLibAVFactory('aac-af-input');
   }
 
   if (!window.__LIBAV_MP3_FACTORY_URL__ || !window.__LIBAV_MP3_WASM_URL__) {
     throw new Error('埋め込み済み obsolete runtime がありません。');
   }
-  console.info('[v1.33] input variant = obsolete / native frontend loader');
+  console.info('[v1.38] input variant = obsolete / native frontend loader');
   return {
     front: window.LibAVInput54,
     toImport: window.__LIBAV_MP3_FACTORY_URL__,
@@ -784,7 +796,7 @@ function formatCaughtError(error) {
 
 async function openAudioInput(libav, name, file) {
   const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
-  console.info('[v1.33 audio head]', {
+  console.info('[v1.38 audio head]', {
     fileName: file.name,
     fileSize: file.size,
     hex: Array.from(head).map(v => v.toString(16).padStart(2, '0')).join(' ')
@@ -837,7 +849,7 @@ async function probeSelectedAudio() {
       mp3DecoderByName = `lookup-error: ${String(e)}`;
     }
 
-    console.info('[v1.33 libav diagnostic]', {
+    console.info('[v1.38 libav diagnostic]', {
       inputFrontVER: inputFactory?.front?.VER ?? null,
       inputFrontCONFIG: inputFactory?.front?.CONFIG ?? null,
       outputFrontVER: window.LibAVOutput?.VER ?? null,
@@ -854,7 +866,7 @@ async function probeSelectedAudio() {
     const selectedLower = (file?.name || '').toLowerCase();
     if (selectedLower.endsWith('.mp3') && (!mp3InputFormat || (!mp3DecoderByName && !mp3floatDecoderByName))) {
       throw new Error(
-        `MP3 runtime self-check failed v1.33: demuxer=${mp3InputFormat}, decoder=${mp3DecoderByName}, mp3float=${mp3floatDecoderByName}`
+        `MP3 runtime self-check failed v1.38: demuxer=${mp3InputFormat}, decoder=${mp3DecoderByName}, mp3float=${mp3floatDecoderByName}`
       );
     }
     inputName = makeInputName(file);
@@ -1055,14 +1067,33 @@ function setPacketDurationUs(libav, packet, durationUs, tbNum, tbDen) {
   return packet;
 }
 
+function getSparseNominalRate(pageSpecs) {
+  const seconds = Math.max(0.001, Number(pageSpecs?.[0]?.duration) || 5);
+  const durationMs = Math.max(1, Math.round(seconds * 1000));
+  const [num, den] = simplifyRatio(1000, durationMs);
+  return { num, den, seconds };
+}
+
+async function setVideoCodecparNominalRate(libav, codecparPtr, pageSpecs, label) {
+  const { num, den, seconds } = getSparseNominalRate(pageSpecs);
+  if (typeof libav.AVCodecParameters_framerate_s !== 'function') {
+    throw new Error(`${label}: AVCodecParameters_framerate_s is missing.`);
+  }
+  await libav.AVCodecParameters_framerate_s(codecparPtr, num, den);
+  console.info(`[v1.38 ${label} codecpar nominal rate]`, {
+    fps: `${num}/${den}`,
+    defaultSlideSeconds: seconds
+  });
+}
+
 async function makeVideo(args) {
   if (args.outputContainer === 'mkv') {
     try {
-      console.info('[v1.33] MKV primary mode = sparse video + audio copy');
+      console.info('[v1.38] MKV primary mode = sparse video + audio copy');
       args.onProgress?.('MKV: 音声copyを試行中...');
       return await makeMkvCopyVideo(args);
     } catch (copyError) {
-      console.warn('[v1.33] MKV audio-copy path failed; retrying with Opus transcode', copyError);
+      console.warn('[v1.38] MKV audio-copy path failed; retrying with Opus transcode', copyError);
       args.onProgress?.(`MKV: 音声copyに失敗したためOpusで再試行中...\n${copyError?.message || copyError}`);
       return await makeTranscodedVideo({ ...args, mkvFallbackFromCopyError: copyError });
     }
@@ -1224,7 +1255,7 @@ async function makeMkvCopyVideo({ pageSpecs, audioFile, outputHandle, videoChoic
 
         await videoEncoder.flush();
         videoEncoder.close();
-        console.info('[v1.33 MKV sparse diagnostic]', {
+        console.info('[v1.38 MKV sparse diagnostic]', {
           plannedFrames: pageSeq,
           encodedFrames: sparseEncodedCount,
           videoEndUs: timestampUs,
@@ -1245,6 +1276,7 @@ async function makeMkvCopyVideo({ pageSpecs, audioFile, outputHandle, videoChoic
     libav.onwrite = (name, position, data) => {
       if (name === outputName) directWriter.enqueue(position, data);
     };
+    await setVideoCodecparNominalRate(libav, videoStreamInfo[0], pageSpecs, 'MKV-copy');
     const [ofc, , pb] = await libav.ff_init_muxer(
       { filename: outputName, open: true, codecpars: true, format_name: 'matroska' },
       [videoStreamInfo, audioStreamInfo]
@@ -1330,7 +1362,7 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
     const writable = await outputHandle.createWritable();
     directWriter = new DirectFileWriter(writable);
     if (outputContainer === 'mkv' && mkvFallbackFromCopyError) {
-      console.info('[v1.33] MKV fallback started with fresh writable/libav instances', {
+      console.info('[v1.38] MKV fallback started with fresh writable/libav instances', {
         originalError: mkvFallbackFromCopyError?.message || String(mkvFallbackFromCopyError)
       });
     }
@@ -1343,14 +1375,18 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
 
     const inputFactory = getInputLibAVFactory(audioFile);
     const useMp4 = outputContainer === 'mp4';
-    if (!inputFactory || (!useMp4 && !window.LibAVOutput)) {
+    if (!inputFactory) {
       throw new Error('必要な libav.js runtime を読み込めませんでした。');
     }
     [inputLibav, outputLibav] = await Promise.all([
       createInputLibAV(inputFactory),
       useMp4
         ? createInputLibAV(getAACLibAVFactory('aac-af-output'))
-        : window.LibAVOutput.LibAV(window.__LIBAV_OFFLINE_EMBEDDED__ ? { noworker: true, noes6: true } : { noworker: true })
+        : createInputLibAV(getObsoleteLibAVFactory(
+            outputContainer === 'mkv'
+              ? 'obsolete-mkv-output-patched'
+              : 'obsolete-webm-output-patched'
+          ))
     ]);
     if (useMp4) {
       const aacEncoderCheck = typeof outputLibav.avcodec_find_encoder_by_name === 'function'
@@ -1359,7 +1395,7 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
       const h264DescCheck = typeof outputLibav.avcodec_descriptor_get_by_name === 'function'
         ? await outputLibav.avcodec_descriptor_get_by_name('h264')
         : 0;
-      console.info('[v1.33 MP4 runtime diagnostic]', { aacEncoderCheck, h264DescCheck });
+      console.info('[v1.38 MP4 runtime diagnostic]', { aacEncoderCheck, h264DescCheck });
       if (!aacEncoderCheck || !h264DescCheck) {
         throw new Error(`MP4 runtime self-check failed: aacEncoder=${aacEncoderCheck}, h264Descriptor=${h264DescCheck}`);
       }
@@ -1625,7 +1661,7 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
           if (sparseTimestampUs + 1000 < finalAudioUs) {
             throw new Error(`${outputContainer.toUpperCase()} sparse video ended early: video=${sparseTimestampUs}us audio=${finalAudioUs}us`);
           }
-          console.info(outputContainer === 'mkv' ? '[v1.33 MKV mobile sparse diagnostic]' : '[v1.33 WebM sparse diagnostic]', {
+          console.info(outputContainer === 'mkv' ? '[v1.38 MKV sparse diagnostic]' : '[v1.38 WebM sparse diagnostic]', {
             plannedFrames: sparsePageSeq,
             encodedFrames: sparseEncodedCount,
             videoEndUs: sparseTimestampUs,
@@ -1656,6 +1692,11 @@ async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoCh
         : 'webm';
     await outputLibav.mkwriterdev(outputName);
     outputLibav.onwrite = (name, position, data) => { if (name === outputName) directWriter.enqueue(position, data); };
+    if (outputContainer !== 'mp4') {
+      await setVideoCodecparNominalRate(
+        outputLibav, videoStreamInfo[0], pageSpecs, outputContainer.toUpperCase()
+      );
+    }
     const [ofc, , pb] = await outputLibav.ff_init_muxer(
       { filename: outputName, open: true, codecpars: true, format_name: muxFormat },
       [videoStreamInfo, audioInfo.streamInfo]
