@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>スライド + 音声 → MP4 / WebM v1.23</title>
+  <title>スライド + 音声 → WebM / MP4 / MKV v1.29</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 14px 48px; }
@@ -38,7 +38,7 @@
   </style>
 </head>
 <body>
-  <h1>複数ページのスライド + 音声 → MP4 / WebM v1.23</h1>
+  <h1>複数ページのスライド + 音声 → WebM / MP4 / MKV v1.29</h1>
   <p>各ページを「画像のみ / テキストのみ / 背景画像 + テキスト」から選び、表示秒数を指定して音声に合わせてローテーションできます。</p>
 
   <div class="panel">
@@ -116,6 +116,16 @@
     </div>
   </div>
 
+  <div class="panel">
+    <label for="outputFormat"><strong>出力フォーマット</strong></label>
+    <select id="outputFormat">
+      <option value="webm" selected>WebM（1スライド1フレーム / Opus）</option>
+      <option value="mp4">MP4（5fps / H.264 + AAC）</option>
+      <option value="mkv">MKV（1スライド1フレーム / 音声copy優先）</option>
+    </select>
+    <div class="help">WebM/MKVはページ切替時だけ映像フレームを生成します。MP4は互換性優先で5fpsです。</div>
+  </div>
+
   <label for="audioFile">音声</label>
   <input id="audioFile" type="file" accept="audio/*,.aac" />
 
@@ -135,7 +145,7 @@
     <video id="videoPreview" controls></video>
   </div>
 
-  <p class="help">映像は5fps。H.264対応端末では WebCodecs のH.264（ハードウェア優先）+ AAC / MP4、非対応端末では VP9/VP8 + Opus / WebM に自動フォールバックします。音声のdemux/decode/resample/encodeとmuxは専用libav.jsで行います。</p>
+  <p class="help">WebMはVP9/VP8 + Opusで1スライド1フレーム、MP4はH.264 + AACで5fps、MKVはH.264/VP9/VP8で1スライド1フレーム + 音声ストリームcopyを優先します。</p>
   <!-- __EMBED_RUNTIME__ -->
   <script>
 const FPS = 5;
@@ -155,6 +165,7 @@ const ratioFromImageButton = document.querySelector('#ratioFromImageButton');
 const previewCanvas = document.querySelector('#previewCanvas');
 const previewLabel = document.querySelector('#previewLabel');
 const timelineSummary = document.querySelector('#timelineSummary');
+const outputFormatInput = document.querySelector('#outputFormat');
 const audioInput = document.querySelector('#audioFile');
 const audioCapabilityEl = document.querySelector('#audioCapability');
 const capabilityEl = document.querySelector('#capability');
@@ -168,6 +179,7 @@ let capability = null;
 let selectedAudioProbe = null;
 let probeSerial = 0;
 let videoPreviewUrl = null;
+let previewRenderTimer = null;
 
 window.addEventListener('DOMContentLoaded', async () => {
   addPage();
@@ -228,6 +240,10 @@ ratioFromImageButton.addEventListener('click', async () => {
   updateTimelineSummary();
   await renderSelectedPreview();
 });
+outputFormatInput.addEventListener('change', async () => {
+  await detectCapabilities();
+  if (audioInput.files?.[0]) await probeSelectedAudio();
+});
 audioInput.addEventListener('change', probeSelectedAudio);
 
 makeButton.addEventListener('click', async () => {
@@ -246,12 +262,15 @@ makeButton.addEventListener('click', async () => {
 
   let outputHandle;
   try {
-    const mp4 = capability.container === 'mp4';
+    const format = outputFormatInput.value || 'webm';
+    const saveSpec = format === 'mp4'
+      ? { suggestedName: 'output.mp4', description: 'MP4 video', mime: 'video/mp4', ext: '.mp4' }
+      : format === 'mkv'
+        ? { suggestedName: 'output.mkv', description: 'Matroska video', mime: 'video/x-matroska', ext: '.mkv' }
+        : { suggestedName: 'output.webm', description: 'WebM video', mime: 'video/webm', ext: '.webm' };
     outputHandle = await window.showSaveFilePicker({
-      suggestedName: mp4 ? 'output.mp4' : 'output.webm',
-      types: mp4
-        ? [{ description: 'MP4 video', accept: { 'video/mp4': ['.mp4'] } }]
-        : [{ description: 'WebM video', accept: { 'video/webm': ['.webm'] } }]
+      suggestedName: saveSpec.suggestedName,
+      types: [{ description: saveSpec.description, accept: { [saveSpec.mime]: [saveSpec.ext] } }]
     });
   } catch (error) {
     if (error?.name === 'AbortError') return setStatus('保存をキャンセルしました。');
@@ -265,7 +284,7 @@ makeButton.addEventListener('click', async () => {
       audioFile,
       outputHandle,
       videoChoice: capability.videoChoice,
-      outputContainer: capability.container,
+      outputContainer: outputFormatInput.value || 'webm',
       width: capability.width,
       height: capability.height,
       onProgress: setStatus
@@ -279,7 +298,7 @@ makeButton.addEventListener('click', async () => {
       `完成しました。\n` +
       `ページ数: ${result.pageCount}\n` +
       `1周: ${result.cycleSeconds.toFixed(1)}秒\n` +
-      `動画: ${result.codecLabel} / ${result.width}×${result.height} / ${FPS}fps\n` +
+      `動画: ${result.codecLabel} / ${result.width}×${result.height} / ${result.videoRateLabel}\n` +
       `音声: ${result.audioCodecLabel}\n` +
       `形式: ${result.containerLabel}\n` +
       `長さ: ${formatSeconds(result.durationUs / 1_000_000)}\n` +
@@ -304,7 +323,7 @@ function addPage(initial = {}) {
     <div class="page-head">
       <h3 class="page-title"></h3>
       <div class="page-actions">
-        <button type="button" data-action="preview">プレビュー</button>
+        <button type="button" data-action="preview">プレビュー更新</button>
         <button type="button" data-action="up">↑</button>
         <button type="button" data-action="down">↓</button>
         <button type="button" data-action="remove">削除</button>
@@ -415,23 +434,37 @@ function bindPageCard(card) {
   card.addEventListener('change', async (event) => {
     const name = event.target?.dataset?.field;
     if (!name) return;
+    const id = card.dataset.pageId;
     updatePageCard(card);
     updateImageRatioControls();
     updateTimelineSummary();
     updateMakeButton();
-    if (card.dataset.pageId === previewPageId) await renderSelectedPreview();
+    previewPageId = id;
+    await renderSelectedPreview({ silent: true });
   });
   card.addEventListener('input', (event) => {
     const name = event.target?.dataset?.field;
     if (!name) return;
+    const id = card.dataset.pageId;
     if (name === 'bodyFontScale' || name === 'titleFontScale') event.target.nextElementSibling.value = `${event.target.value}%`;
     if (name === 'lineHeight') event.target.nextElementSibling.value = Number(event.target.value).toFixed(2);
     if (name === 'overlay') event.target.nextElementSibling.value = `${Math.round(Number(event.target.value) * 100)}%`;
     updateTimelineSummary(); updateMakeButton();
+    schedulePreviewUpdate({ pageId: id, delay: 120 });
   });
 }
 
 function field(card, name) { return card.querySelector(`[data-field="${name}"]`); }
+
+function schedulePreviewUpdate(options = {}) {
+  const { pageId = null, delay = 120 } = options;
+  if (pageId) previewPageId = pageId;
+  if (previewRenderTimer) clearTimeout(previewRenderTimer);
+  previewRenderTimer = setTimeout(() => {
+    previewRenderTimer = null;
+    renderSelectedPreview({ silent: true }).catch(error => console.error(error));
+  }, delay);
+}
 
 function updatePageCard(card) {
   const type = field(card, 'type').value;
@@ -535,7 +568,8 @@ function collectPageSpec(card, index) {
   };
 }
 
-async function renderSelectedPreview() {
+async function renderSelectedPreview(options = {}) {
+  const { silent = false } = options;
   resizePreviewCanvas();
   const id = previewPageId || pages[0]?.id;
   if (!id) return;
@@ -546,9 +580,10 @@ async function renderSelectedPreview() {
   try {
     const spec = collectPageSpec(card, index);
     await renderPageIntoCanvas(previewCanvas, spec, previewCanvas.width, previewCanvas.height, null);
-    setStatus(`ページ ${index + 1} のプレビューを更新しました。`);
+    if (!silent) setStatus(`ページ ${index + 1} のプレビューを更新しました。`);
   } catch (error) {
     drawPreviewPlaceholder(ctx, previewCanvas.width, previewCanvas.height, error.message);
+    if (!silent) setStatus(`プレビュー更新エラー:\n${error.message}`);
   }
 }
 
@@ -621,10 +656,17 @@ async function detectCapabilities() {
   if (!('VideoFrame' in window)) reasons.push('WebCodecs の VideoFrame に対応していません。');
   if (!('OffscreenCanvas' in window)) reasons.push('OffscreenCanvas に対応していません。');
 
+  const selectedFormat = outputFormatInput?.value || 'webm';
   let selectedVideo = null;
   if (!reasons.length) {
-    selectedVideo = await pickVideoCodec(target.width, target.height);
-    if (!selectedVideo) reasons.push('H.264 / VP9 / VP8 エンコードに対応していません。');
+    selectedVideo = await pickVideoCodec(target.width, target.height, selectedFormat);
+    if (!selectedVideo) {
+      reasons.push(
+        selectedFormat === 'mp4'
+          ? 'MP4用H.264エンコードに対応していません。'
+          : 'この出力形式で使えるVP9 / VP8 / H.264エンコードに対応していません。'
+      );
+    }
   }
   capability = {
     ok: !reasons.length,
@@ -633,12 +675,17 @@ async function detectCapabilities() {
     videoCodec: selectedVideo?.codec || null,
     codecLabel: selectedVideo?.label || null,
     videoChoice: selectedVideo || null,
-    container: selectedVideo?.container || null
+    container: selectedFormat
   };
   resizePreviewCanvas();
   capabilityEl.className = capability.ok ? 'ok' : 'ng';
+  const formatLabel = selectedFormat === 'mp4'
+    ? 'MP4 / AAC / 5fps'
+    : selectedFormat === 'mkv'
+      ? 'MKV / 音声copy優先 / 1スライド1フレーム'
+      : 'WebM / Opus / 1スライド1フレーム';
   capabilityEl.textContent = capability.ok
-    ? `✓ 利用可能\n端末: ${mobile ? 'スマホ/モバイル' : 'デスクトップ'}\n解像度: ${target.width}×${target.height}\n映像: ${selectedVideo.label}\n出力: ${selectedVideo.container === 'mp4' ? 'MP4 / AAC' : 'WebM / Opus'}\nフレームレート: ${FPS}fps`
+    ? `✓ 利用可能\n端末: ${mobile ? 'スマホ/モバイル' : 'デスクトップ'}\n解像度: ${target.width}×${target.height}\n映像: ${selectedVideo.label}\n出力: ${formatLabel}`
     : `✗ 実行できません\n- ${reasons.join('\n- ')}`;
   updateMakeButton();
 }
@@ -670,14 +717,14 @@ function getInputLibAVFactory(file) {
   }
 
   if (aacFamily) {
-    console.info('[v1.23] input variant = aac-af / native frontend loader');
+    console.info('[v1.29] input variant = aac-af / native frontend loader');
     return getAACLibAVFactory('aac-af-input');
   }
 
   if (!window.__LIBAV_MP3_FACTORY_URL__ || !window.__LIBAV_MP3_WASM_URL__) {
     throw new Error('埋め込み済み obsolete runtime がありません。');
   }
-  console.info('[v1.23] input variant = obsolete / native frontend loader');
+  console.info('[v1.29] input variant = obsolete / native frontend loader');
   return {
     front: window.LibAVInput54,
     toImport: window.__LIBAV_MP3_FACTORY_URL__,
@@ -736,7 +783,7 @@ function formatCaughtError(error) {
 
 async function openAudioInput(libav, name, file) {
   const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
-  console.info('[v1.23 audio head]', {
+  console.info('[v1.29 audio head]', {
     fileName: file.name,
     fileSize: file.size,
     hex: Array.from(head).map(v => v.toString(16).padStart(2, '0')).join(' ')
@@ -789,7 +836,7 @@ async function probeSelectedAudio() {
       mp3DecoderByName = `lookup-error: ${String(e)}`;
     }
 
-    console.info('[v1.23 libav diagnostic]', {
+    console.info('[v1.29 libav diagnostic]', {
       inputFrontVER: inputFactory?.front?.VER ?? null,
       inputFrontCONFIG: inputFactory?.front?.CONFIG ?? null,
       outputFrontVER: window.LibAVOutput?.VER ?? null,
@@ -806,7 +853,7 @@ async function probeSelectedAudio() {
     const selectedLower = (file?.name || '').toLowerCase();
     if (selectedLower.endsWith('.mp3') && (!mp3InputFormat || (!mp3DecoderByName && !mp3floatDecoderByName))) {
       throw new Error(
-        `MP3 runtime self-check failed v1.23: demuxer=${mp3InputFormat}, decoder=${mp3DecoderByName}, mp3float=${mp3floatDecoderByName}`
+        `MP3 runtime self-check failed v1.29: demuxer=${mp3InputFormat}, decoder=${mp3DecoderByName}, mp3float=${mp3floatDecoderByName}`
       );
     }
     inputName = makeInputName(file);
@@ -826,10 +873,15 @@ async function probeSelectedAudio() {
     if (serial !== probeSerial) return;
     selectedAudioProbe = { ok: true, file, codecId: audioStream.codec_id, sampleRate, channels };
     audioCapabilityEl.className = 'ok';
-    const targetAudio = capability?.container === 'mp4' ? 'AAC' : 'Opus';
+    const selectedFormat = outputFormatInput?.value || 'webm';
+    const targetAudio = selectedFormat === 'mp4'
+      ? 'AAC'
+      : selectedFormat === 'mkv'
+        ? '原音声copy優先（非対応時はOpus）'
+        : 'Opus';
     audioCapabilityEl.textContent = `✓ libav.js で処理可能
 入力: codec_id ${audioStream.codec_id}
-${sampleRate} Hz / ${channels}ch → 48kHz / ${channels === 1 ? 'mono' : 'stereo'} / ${targetAudio}`;
+${sampleRate} Hz / ${channels}ch → ${targetAudio}`;
   } catch (error) {
     if (serial !== probeSerial) return;
     selectedAudioProbe = { ok: false, file, error };
@@ -845,52 +897,61 @@ ${formatCaughtError(error)}`;
   }
 }
 
-async function pickVideoCodec(width, height) {
+async function pickVideoCodec(width, height, format = 'webm') {
   const bitrate = Math.max(2e6, Math.round(width * height / 600));
 
-  // H.264 first. WebCodecs cannot prove that hardware is actually used,
-  // but prefer-hardware asks the browser to choose it when available.
-  for (const codec of ['avc1.640028', 'avc1.4D4028', 'avc1.420028']) {
-    const config = {
-      codec,
-      width,
-      height,
-      bitrate,
-      framerate: FPS,
-      hardwareAcceleration: 'prefer-hardware',
-      avc: { format: 'avc' }
-    };
-    try {
-      const s = await VideoEncoder.isConfigSupported(config);
-      if (s.supported) {
-        return {
-          codec,
-          label: `H.264 (${codec}, HW優先)`,
-          container: 'mp4',
-          config: { ...config, ...(s.config || {}) }
-        };
-      }
-    } catch {}
-  }
+  const tryH264 = async () => {
+    for (const codec of ['avc1.640028', 'avc1.4D4028', 'avc1.420028']) {
+      const config = {
+        codec,
+        width,
+        height,
+        bitrate,
+        framerate: FPS,
+        hardwareAcceleration: 'prefer-hardware',
+        avc: { format: 'avc' }
+      };
+      try {
+        const s = await VideoEncoder.isConfigSupported(config);
+        if (s.supported) {
+          return {
+            codec,
+            label: `H.264 (${codec}, HW優先)`,
+            container: format,
+            config: { ...config, ...(s.config || {}) }
+          };
+        }
+      } catch {}
+    }
+    return null;
+  };
 
-  for (const c of [
-    { codec: 'vp09.00.10.08', label: 'VP9' },
-    { codec: 'vp8', label: 'VP8' }
-  ]) {
-    const config = { codec: c.codec, width, height, bitrate, framerate: FPS };
-    try {
-      const s = await VideoEncoder.isConfigSupported(config);
-      if (s.supported) {
-        return {
-          codec: c.codec,
-          label: c.label,
-          container: 'webm',
-          config: { ...config, ...(s.config || {}) }
-        };
-      }
-    } catch {}
-  }
-  return null;
+  const tryWebmCodecs = async () => {
+    for (const c of [
+      { codec: 'vp09.00.10.08', label: 'VP9' },
+      { codec: 'vp8', label: 'VP8' }
+    ]) {
+      const config = { codec: c.codec, width, height, bitrate, framerate: FPS };
+      try {
+        const s = await VideoEncoder.isConfigSupported(config);
+        if (s.supported) {
+          return {
+            codec: c.codec,
+            label: c.label,
+            container: format,
+            config: { ...config, ...(s.config || {}) }
+          };
+        }
+      } catch {}
+    }
+    return null;
+  };
+
+  if (format === 'mp4') return await tryH264();
+  if (format === 'webm') return await tryWebmCodecs();
+
+  // MKV: H.264 first for mobile hardware acceleration; VP9/VP8 as fallback.
+  return (await tryH264()) || (await tryWebmCodecs());
 }
 
 function updateMakeButton() {
@@ -948,7 +1009,263 @@ function pageAtTime(prepared, seconds) {
   return { page: prepared[prepared.length - 1], index: prepared.length - 1 };
 }
 
-async function makeVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outputContainer, width, height, onProgress }) {
+
+function packetI64(libav, lo, hi) {
+  if (typeof libav.i64tof64 === 'function') return libav.i64tof64(lo || 0, hi || 0);
+  return (hi || 0) * 0x100000000 + ((lo || 0) >>> 0);
+}
+function setPacketI64(libav, packet, base, value) {
+  const pair = typeof libav.f64toi64 === 'function'
+    ? libav.f64toi64(value)
+    : [~~value, Math.floor(value / 0x100000000)];
+  packet[base] = pair[0];
+  packet[base + 'hi'] = pair[1];
+}
+function packetEndUs(libav, packet, tbNum, tbDen) {
+  const pts = packetI64(libav, packet.pts, packet.ptshi);
+  const dts = packetI64(libav, packet.dts, packet.dtshi);
+  const start = Number.isFinite(pts) ? pts : dts;
+  const duration = packetI64(libav, packet.duration, packet.durationhi);
+  const ticks = Math.max(0, start || 0) + Math.max(0, duration || 0);
+  return Math.max(0, Math.round(ticks * tbNum * 1e6 / tbDen));
+}
+function packetStartUs(libav, packet, fallbackTbNum, fallbackTbDen) {
+  const tbNum = packet.time_base_num || fallbackTbNum || 1;
+  const tbDen = packet.time_base_den || fallbackTbDen || 1000000;
+  const pts = packetI64(libav, packet.pts, packet.ptshi);
+  const dts = packetI64(libav, packet.dts, packet.dtshi);
+  const start = Number.isFinite(dts) ? dts : (Number.isFinite(pts) ? pts : 0);
+  return Math.max(0, Math.round((start || 0) * tbNum * 1e6 / tbDen));
+}
+function comparePacketsByTime(libav, a, aTbNum, aTbDen, b, bTbNum, bTbDen) {
+  const aUs = packetStartUs(libav, a, aTbNum, aTbDen);
+  const bUs = packetStartUs(libav, b, bTbNum, bTbDen);
+  if (aUs !== bUs) return aUs - bUs;
+  const aStream = a.stream_index ?? 0;
+  const bStream = b.stream_index ?? 0;
+  return aStream - bStream;
+}
+
+async function makeVideo(args) {
+  if (args.outputContainer === 'mkv') {
+    return await makeMkvCopyVideo(args);
+  }
+  return await makeTranscodedVideo(args);
+}
+
+async function makeMkvCopyVideo({ pageSpecs, audioFile, outputHandle, videoChoice, width, height, onProgress }) {
+  let libav = null, inputName = null, inputMode = null, inputFmtCtx = null;
+  let directWriter = null, muxer = null, muxPacketPtr = null, preparedPages = null;
+  try {
+    onProgress('MKV用素材を準備中...');
+    preparedPages = await preparePages(pageSpecs);
+    const sourceCanvas = new OffscreenCanvas(width, height);
+
+    libav = await createInputLibAV(getInputLibAVFactory(audioFile));
+    inputName = makeInputName(audioFile);
+    const openedInput = await openAudioInput(libav, inputName, audioFile);
+    inputMode = openedInput.mode;
+    inputFmtCtx = openedInput.init[0];
+    const audioStream = openedInput.init[1].find(s => s.codec_type === libav.AVMEDIA_TYPE_AUDIO || s.codec_type === 1);
+    if (!audioStream) throw new Error('MKVへcopyする音声ストリームが見つかりません。');
+
+    const codecName = typeof libav.avcodec_get_name === 'function'
+      ? await libav.avcodec_get_name(audioStream.codec_id)
+      : `codec_id ${audioStream.codec_id}`;
+    const videoDescName = videoChoice?.codec?.startsWith('avc1') ? 'h264'
+      : videoChoice?.codec?.startsWith('vp09') ? 'vp9'
+      : videoChoice?.codec === 'vp8' ? 'vp8'
+      : null;
+    if (videoDescName && typeof libav.avcodec_descriptor_get_by_name === 'function') {
+      const desc = await libav.avcodec_descriptor_get_by_name(videoDescName);
+      if (!desc) throw new Error(`MKV runtimeに映像codec descriptor ${videoDescName} がありません。`);
+    }
+
+    const videoConfig = { ...(videoChoice?.config || {}), codec: videoChoice?.codec, width, height };
+    delete videoConfig.framerate; // VFR: keep microsecond time base in bridge.
+    if (!videoConfig.codec) throw new Error('MKV映像コーデック設定がありません。');
+
+    const videoStreamInfo = await LibAVWebCodecsBridge.configToVideoStream(libav, videoConfig);
+    const audioTbNum = audioStream.time_base_num || 1;
+    const audioTbDen = audioStream.time_base_den || audioStream.sample_rate || 48000;
+    const audioStreamInfo = [audioStream.codecpar, audioTbNum, audioTbDen];
+
+    const videoOut = new BufferStream();
+    const audioOut = new BufferStream();
+    const videoReader = videoOut.getReader();
+    const audioReader = audioOut.getReader();
+    const audioClock = new AudioClock();
+    let pipelineError = null;
+
+    const videoEncoder = new VideoEncoder({
+      output: (chunk, metadata) => videoOut.push({ chunk, metadata }),
+      error: e => { pipelineError = e; videoOut.push(null); }
+    });
+    videoEncoder.configure(videoConfig);
+
+    const audioProducer = (async () => {
+      const pkt = await libav.av_packet_alloc();
+      let firstTs = null;
+      let lastEndUs = 0;
+      try {
+        onProgress(`MKV: 音声を再エンコードせずcopy中... (${codecName})`);
+        for (;;) {
+          const [result, packets] = await libav.ff_read_frame_multi(inputFmtCtx, pkt, { limit: 256 * 1024 });
+          const list = packets?.[audioStream.index] || [];
+          for (const packet of list) {
+            const pts0 = packetI64(libav, packet.pts, packet.ptshi);
+            const dts0 = packetI64(libav, packet.dts, packet.dtshi);
+            const ts0 = Number.isFinite(pts0) ? pts0 : dts0;
+            if (firstTs === null && Number.isFinite(ts0)) firstTs = ts0;
+            const shift = firstTs || 0;
+            if (Number.isFinite(pts0)) setPacketI64(libav, packet, 'pts', pts0 - shift);
+            if (Number.isFinite(dts0)) setPacketI64(libav, packet, 'dts', dts0 - shift);
+            packet.stream_index = 1;
+            packet.time_base_num = audioTbNum;
+            packet.time_base_den = audioTbDen;
+            lastEndUs = Math.max(lastEndUs, packetEndUs(libav, packet, audioTbNum, audioTbDen));
+            audioClock.advance(lastEndUs);
+            audioOut.push(packet);
+          }
+          if (result === libav.AVERROR_EOF) break;
+          if (result === -libav.EAGAIN || result === 0) continue;
+          if (result < 0) throw new Error(`MKV音声 demux エラー: ${result}`);
+        }
+        audioClock.finish();
+        audioOut.push(null);
+      } catch (e) {
+        pipelineError = e;
+        audioClock.fail(e);
+        audioOut.push(null);
+      } finally {
+        try { await libav.av_packet_free(pkt); } catch {}
+      }
+    })();
+
+    const videoProducer = (async () => {
+      let pageSeq = 0;
+      let timestampUs = 0;
+      try {
+        while (true) {
+          if (audioClock.error) throw audioClock.error;
+          const observed = audioClock.endUs;
+
+          while (timestampUs < observed) {
+            const page = preparedPages[pageSeq % preparedPages.length];
+            const pageIndex = pageSeq % preparedPages.length;
+            const nominalDurationUs = Math.max(1, Math.round(page.duration * 1e6));
+
+            // Before EOF, wait until the full slide interval is known.
+            if (!audioClock.done && timestampUs + nominalDurationUs > observed) break;
+            const durationUs = audioClock.done
+              ? Math.min(nominalDurationUs, Math.max(1, observed - timestampUs))
+              : nominalDurationUs;
+            if (durationUs <= 0) break;
+
+            while (videoEncoder.encodeQueueSize > 4) await waitForDequeue(videoEncoder);
+            await renderPageIntoCanvas(sourceCanvas, page, width, height, page.bitmap);
+            const frame = new VideoFrame(sourceCanvas, { timestamp: timestampUs, duration: durationUs });
+            videoEncoder.encode(frame, { keyFrame: true });
+            frame.close();
+
+            timestampUs += durationUs;
+            pageSeq++;
+            onProgress(`MKV: 映像 ${pageSeq}フレーム / ${formatSeconds(timestampUs / 1e6)} / ページ${pageIndex + 1}`);
+            await new Promise(requestAnimationFrame);
+          }
+          if (audioClock.done) break;
+          await audioClock.waitForChange(observed);
+        }
+        await videoEncoder.flush();
+        videoEncoder.close();
+        videoOut.push(null);
+      } catch (e) {
+        pipelineError = e;
+        try { videoEncoder.close(); } catch {}
+        videoOut.push(null);
+      }
+    })();
+
+    const writable = await outputHandle.createWritable();
+    directWriter = new DirectFileWriter(writable);
+    const outputName = 'output.mkv';
+    await libav.mkwriterdev(outputName);
+    libav.onwrite = (name, position, data) => {
+      if (name === outputName) directWriter.enqueue(position, data);
+    };
+    const [ofc, , pb] = await libav.ff_init_muxer(
+      { filename: outputName, open: true, codecpars: true, format_name: 'matroska' },
+      [videoStreamInfo, audioStreamInfo]
+    );
+    muxer = { ofc, pb };
+    muxPacketPtr = await libav.av_packet_alloc();
+    await libav.avformat_write_header(ofc, 0);
+
+    const nextVideoPacket = async () => {
+      const { done, value } = await videoReader.read();
+      if (done) return null;
+      return await LibAVWebCodecsBridge.encodedVideoChunkToPacket(
+        libav, value.chunk, value.metadata, videoStreamInfo, 0
+      );
+    };
+    const nextAudioPacket = async () => {
+      const { done, value } = await audioReader.read();
+      return done ? null : value;
+    };
+
+    let videoPacket = await nextVideoPacket();
+    let audioPacket = await nextAudioPacket();
+    if (pipelineError) throw pipelineError;
+    if (!videoPacket || !audioPacket) throw new Error('MKVの最初の映像/音声packetを作れませんでした。');
+
+    while (videoPacket || audioPacket) {
+      if (pipelineError) throw pipelineError;
+      const useVideo = !audioPacket || (
+        videoPacket && comparePacketsByTime(
+          libav,
+          videoPacket, videoStreamInfo[1], videoStreamInfo[2],
+          audioPacket, audioTbNum, audioTbDen
+        ) <= 0
+      );
+      if (useVideo) {
+        await libav.ff_write_multi(ofc, muxPacketPtr, [videoPacket]);
+        videoPacket = await nextVideoPacket();
+      } else {
+        await libav.ff_write_multi(ofc, muxPacketPtr, [audioPacket]);
+        audioPacket = await nextAudioPacket();
+      }
+    }
+
+    await Promise.all([audioProducer, videoProducer]);
+    if (pipelineError) throw pipelineError;
+    await libav.av_write_trailer(ofc);
+    await directWriter.finish();
+    directWriter = null;
+
+    return {
+      pageCount: preparedPages.length,
+      cycleSeconds: preparedPages.reduce((a,p) => a+p.duration,0),
+      width, height,
+      codecLabel: videoChoice?.label || videoChoice?.codec || 'unknown',
+      audioCodecLabel: `${codecName} → copy`,
+      containerLabel: 'MKV (VFR / audio copy)',
+      videoRateLabel: '1スライド1フレーム',
+      durationUs: audioClock.endUs
+    };
+  } catch (e) {
+    if (directWriter) await directWriter.abort(e);
+    throw e;
+  } finally {
+    closePreparedPages(preparedPages);
+    try { if (inputFmtCtx && libav) await libav.avformat_close_input_js(inputFmtCtx); } catch {}
+    try { if (inputName && libav) await closeAudioInput(libav, inputName, inputMode); } catch {}
+    try { if (muxer && libav) await libav.ff_free_muxer(muxer.ofc, muxer.pb); } catch {}
+    try { if (muxPacketPtr && libav) await libav.av_packet_free(muxPacketPtr); } catch {}
+    try { await libav?.terminate(); } catch {}
+  }
+}
+
+async function makeTranscodedVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outputContainer, width, height, onProgress }) {
   let inputLibav = null, outputLibav = null, inputName = null, inputMode = null, directWriter = null;
   let muxer = null, muxPacketPtr = null, preparedPages = null;
   let decoder = null, inputFmtCtx = null;
@@ -980,7 +1297,7 @@ async function makeVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outp
       const h264DescCheck = typeof outputLibav.avcodec_descriptor_get_by_name === 'function'
         ? await outputLibav.avcodec_descriptor_get_by_name('h264')
         : 0;
-      console.info('[v1.23 MP4 runtime diagnostic]', { aacEncoderCheck, h264DescCheck });
+      console.info('[v1.29 MP4 runtime diagnostic]', { aacEncoderCheck, h264DescCheck });
       if (!aacEncoderCheck || !h264DescCheck) {
         throw new Error(`MP4 runtime self-check failed: aacEncoder=${aacEncoderCheck}, h264Descriptor=${h264DescCheck}`);
       }
@@ -1000,9 +1317,10 @@ async function makeVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outp
       ...(videoChoice?.config || {}),
       codec: videoChoice?.codec,
       width,
-      height,
-      framerate: FPS
+      height
     };
+    if (outputContainer === 'mp4') videoConfig.framerate = FPS;
+    else delete videoConfig.framerate;
     if (!videoConfig.codec) throw new Error('映像コーデック設定がありません。');
     const videoStreamInfo = await LibAVWebCodecsBridge.configToVideoStream(outputLibav, videoConfig);
 
@@ -1157,30 +1475,62 @@ async function makeVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outp
     })();
 
     const frameDurationUs = Math.round(1e6 / FPS);
+    const sparseVideo = outputContainer !== 'mp4';
     const videoProducer = (async () => {
       let frameIndex = 0;
+      let sparsePageSeq = 0;
+      let sparseTimestampUs = 0;
       try {
         while (true) {
           if (audioClock.error) throw audioClock.error;
           const observed = audioClock.endUs;
-          while (frameIndex * frameDurationUs < observed) {
-            while (videoEncoder.encodeQueueSize > 8) await waitForDequeue(videoEncoder);
-            const timestamp = frameIndex * frameDurationUs;
-            const { page, index } = pageAtTime(preparedPages, timestamp / 1e6);
-            if (index !== renderedPageIndex) {
+
+          if (sparseVideo) {
+            while (sparseTimestampUs < observed) {
+              const page = preparedPages[sparsePageSeq % preparedPages.length];
+              const index = sparsePageSeq % preparedPages.length;
+              const nominalDurationUs = Math.max(1, Math.round(page.duration * 1e6));
+              if (!audioClock.done && sparseTimestampUs + nominalDurationUs > observed) break;
+              const durationUs = audioClock.done
+                ? Math.min(nominalDurationUs, Math.max(1, observed - sparseTimestampUs))
+                : nominalDurationUs;
+              if (durationUs <= 0) break;
+
+              while (videoEncoder.encodeQueueSize > 4) await waitForDequeue(videoEncoder);
               await renderPageIntoCanvas(sourceCanvas, page, width, height, page.bitmap);
               renderedPageIndex = index;
-            }
-            const previousIndex = pageAtTime(preparedPages, Math.max(0, (timestamp - frameDurationUs) / 1e6)).index;
-            const frame = new VideoFrame(sourceCanvas, { timestamp, duration: frameDurationUs });
-            videoEncoder.encode(frame, { keyFrame: frameIndex === 0 || index !== previousIndex });
-            frame.close();
-            frameIndex++;
-            if (frameIndex % FPS === 0) {
-              onProgress(`処理中... ${formatSeconds(audioClock.endUs / 1e6)} / 表示ページ ${index + 1}`);
+              const frame = new VideoFrame(sourceCanvas, {
+                timestamp: sparseTimestampUs,
+                duration: durationUs
+              });
+              videoEncoder.encode(frame, { keyFrame: true });
+              frame.close();
+              sparseTimestampUs += durationUs;
+              sparsePageSeq++;
+              onProgress(`処理中... 映像 ${sparsePageSeq}フレーム / ${formatSeconds(sparseTimestampUs / 1e6)} / 表示ページ ${index + 1}`);
               await new Promise(requestAnimationFrame);
             }
+          } else {
+            while (frameIndex * frameDurationUs < observed) {
+              while (videoEncoder.encodeQueueSize > 8) await waitForDequeue(videoEncoder);
+              const timestamp = frameIndex * frameDurationUs;
+              const { page, index } = pageAtTime(preparedPages, timestamp / 1e6);
+              if (index !== renderedPageIndex) {
+                await renderPageIntoCanvas(sourceCanvas, page, width, height, page.bitmap);
+                renderedPageIndex = index;
+              }
+              const previousIndex = pageAtTime(preparedPages, Math.max(0, (timestamp - frameDurationUs) / 1e6)).index;
+              const frame = new VideoFrame(sourceCanvas, { timestamp, duration: frameDurationUs });
+              videoEncoder.encode(frame, { keyFrame: frameIndex === 0 || index !== previousIndex });
+              frame.close();
+              frameIndex++;
+              if (frameIndex % FPS === 0) {
+                onProgress(`処理中... ${formatSeconds(audioClock.endUs / 1e6)} / 表示ページ ${index + 1}`);
+                await new Promise(requestAnimationFrame);
+              }
+            }
           }
+
           if (audioClock.done) break;
           await audioClock.waitForChange(observed);
         }
@@ -1194,15 +1544,7 @@ async function makeVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outp
       }
     })();
 
-    const [fv, audioInfo, fa] = await Promise.all([videoReader.read(), audioReady, audioReader.read()]);
-    if (pipelineError) throw pipelineError;
-    if (fv.done || fa.done) throw new Error('最初の映像/音声フレームを作れませんでした。');
-
-    const firstVideoPacket = await LibAVWebCodecsBridge.encodedVideoChunkToPacket(
-      outputLibav, fv.value.chunk, fv.value.metadata, videoStreamInfo, 0
-    );
-    const firstAudioPacket = fa.value;
-
+    const audioInfo = await audioReady;
     const outputName = outputContainer === 'mp4' ? 'output.mp4' : 'output.webm';
     const muxFormat = outputContainer === 'mp4' ? 'mp4' : 'webm';
     await outputLibav.mkwriterdev(outputName);
@@ -1214,29 +1556,70 @@ async function makeVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outp
     muxer = { ofc, pb };
     muxPacketPtr = await outputLibav.av_packet_alloc();
     await outputLibav.avformat_write_header(ofc, 0);
-    await outputLibav.ff_write_multi(ofc, muxPacketPtr, [firstVideoPacket, firstAudioPacket]);
 
-    let muxChain = Promise.resolve();
-    const consumeVideo = async () => {
-      for (;;) {
-        const { done, value } = await videoReader.read();
-        if (done) break;
-        muxChain = muxChain.then(async () => {
-          const packet = await LibAVWebCodecsBridge.encodedVideoChunkToPacket(outputLibav, value.chunk, value.metadata, videoStreamInfo, 0);
-          await outputLibav.ff_write_multi(ofc, muxPacketPtr, [packet]);
-        });
-      }
+    const nextVideoPacket = async () => {
+      const { done, value } = await videoReader.read();
+      if (done) return null;
+      return await LibAVWebCodecsBridge.encodedVideoChunkToPacket(
+        outputLibav, value.chunk, value.metadata, videoStreamInfo, 0
+      );
     };
-    const consumeAudio = async () => {
-      for (;;) {
-        const { done, value } = await audioReader.read();
-        if (done) break;
-        muxChain = muxChain.then(() => outputLibav.ff_write_multi(ofc, muxPacketPtr, [value]));
-      }
+    const nextAudioPacket = async () => {
+      const { done, value } = await audioReader.read();
+      return done ? null : value;
     };
 
-    await Promise.all([consumeVideo(), consumeAudio(), videoProducer, audioProducer]);
-    await muxChain;
+    if (outputContainer === 'mp4') {
+      const [fv, fa] = await Promise.all([nextVideoPacket(), nextAudioPacket()]);
+      if (pipelineError) throw pipelineError;
+      if (!fv || !fa) throw new Error('最初の映像/音声フレームを作れませんでした。');
+      await outputLibav.ff_write_multi(ofc, muxPacketPtr, [fv, fa]);
+
+      let muxChain = Promise.resolve();
+      const consumeVideo = async () => {
+        for (;;) {
+          const packet = await nextVideoPacket();
+          if (!packet) break;
+          muxChain = muxChain.then(() => outputLibav.ff_write_multi(ofc, muxPacketPtr, [packet]));
+        }
+      };
+      const consumeAudio = async () => {
+        for (;;) {
+          const packet = await nextAudioPacket();
+          if (!packet) break;
+          muxChain = muxChain.then(() => outputLibav.ff_write_multi(ofc, muxPacketPtr, [packet]));
+        }
+      };
+
+      await Promise.all([consumeVideo(), consumeAudio(), videoProducer, audioProducer]);
+      await muxChain;
+    } else {
+      let videoPacket = await nextVideoPacket();
+      let audioPacket = await nextAudioPacket();
+      if (pipelineError) throw pipelineError;
+      if (!videoPacket || !audioPacket) throw new Error('最初の映像/音声フレームを作れませんでした。');
+
+      while (videoPacket || audioPacket) {
+        if (pipelineError) throw pipelineError;
+        const useVideo = !audioPacket || (
+          videoPacket && comparePacketsByTime(
+            outputLibav,
+            videoPacket, videoStreamInfo[1], videoStreamInfo[2],
+            audioPacket, audioInfo.streamInfo[1], audioInfo.streamInfo[2]
+          ) <= 0
+        );
+        if (useVideo) {
+          await outputLibav.ff_write_multi(ofc, muxPacketPtr, [videoPacket]);
+          videoPacket = await nextVideoPacket();
+        } else {
+          await outputLibav.ff_write_multi(ofc, muxPacketPtr, [audioPacket]);
+          audioPacket = await nextAudioPacket();
+        }
+      }
+
+      await Promise.all([videoProducer, audioProducer]);
+    }
+
     if (pipelineError) throw pipelineError;
     await outputLibav.av_write_trailer(ofc);
     await directWriter.finish();
@@ -1248,7 +1631,8 @@ async function makeVideo({ pageSpecs, audioFile, outputHandle, videoChoice, outp
       width, height,
       codecLabel: videoChoice?.label || videoChoice?.codec || 'unknown',
       audioCodecLabel: audioInfo.codecLabel,
-      containerLabel: outputContainer === 'mp4' ? 'MP4 (H.264 + AAC)' : 'WebM (VP9/VP8 + Opus)',
+      containerLabel: outputContainer === 'mp4' ? 'MP4 (H.264 + AAC)' : 'WebM (VFR + Opus)',
+      videoRateLabel: outputContainer === 'mp4' ? `${FPS}fps` : '1スライド1フレーム',
       durationUs: audioClock.endUs
     };
   } catch (e) {

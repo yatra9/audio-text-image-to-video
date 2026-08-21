@@ -396,3 +396,97 @@ Performance/output update:
 Important:
 WebCodecs can request/prefer hardware acceleration, but its support query does
 not prove that a particular browser/driver actually selected hardware.
+
+
+v1.24 note
+----------
+Output format is now selectable. Default is WebM.
+
+WebM:
+- VP9 -> VP8
+- Opus audio
+- sparse VFR: one encoded video frame per slide interval, not 5fps
+
+MP4:
+- H.264 with hardwareAcceleration=prefer-hardware
+- AAC audio
+- fixed 5fps (same strategy as v1.23)
+
+MKV:
+- H.264 preferred, VP9/VP8 fallback
+- sparse VFR: one encoded video frame per slide interval
+- audio is remuxed/copied without decode/resample/re-encode when possible
+- demux stream.codecpar is passed directly to the Matroska muxer in the same
+  libav.js instance, matching libav.js's remuxing pattern
+
+AAC/MP3/etc input runtimes already enable the Matroska muxer; build checks were
+added for it.
+
+Known practical note:
+Some browsers cannot preview .mkv in the page even though the saved file is valid.
+
+
+v1.25 note
+----------
+Builder and app version: v1.25
+Output: index.html
+
+Build-download reliability fix:
+- FFmpeg source download now retries ffmpeg.org up to 6 times.
+- curl uses --retry-all-errors, connect timeout, and a longer total timeout.
+- If ffmpeg.org still fails, the build downloads GitHub tag n<FFMPEG_VERSION>.
+- The GitHub tar.gz is repacked locally into the exact ffmpeg-<version>.tar.xz
+  filename/layout expected by libav.js's upstream Makefile.
+- Existing valid cached FFmpeg tarballs are reused.
+
+
+v1.26 note
+----------
+Builder and app version: v1.26
+Output: index.html
+
+Fix for:
+    FFMPEG_VERSION: unbound variable
+
+The FFmpeg source-prefetch code introduced in v1.25 now resolves
+FFMPEG_VERSION before first use:
+1. Parse mk/versions.mk.
+2. If necessary, ask make to expand FFMPEG_VERSION.
+3. Abort with a clear error if it still cannot be determined.
+
+All v1.24/v1.25 output-format features remain unchanged.
+
+
+v1.27 note
+----------
+Fixes v1.26 build failure at the FFmpeg-version lookup.
+
+libav.js v5.4.6.1.1 defines FFmpeg version components directly in the root
+Makefile, not mk/versions.mk. v1.27 reads FFMPEG_VERSION_MAJOR and
+FFMPEG_VERSION_MINREV from that Makefile and constructs FFMPEG_VERSION.
+
+The fragile make/stdin fallback from v1.26 has been removed.
+
+
+v1.28 note
+----------
+UI update:
+- Text/page editing now updates the preview automatically in near real time.
+- A small debounce (about 120 ms) is used to avoid excessive rerendering while typing.
+- Editing a page automatically makes that page the active preview target.
+- The manual button remains and is now labeled "プレビュー更新".
+
+
+v1.29 note
+----------
+Fix for black video at the beginning of WebM/MKV sparse-video outputs.
+
+Cause:
+- In 1-slide-1-frame mode, video packets are sparse while audio packets are dense.
+- The old code wrote packets in production order, which could bunch audio packets
+  far ahead of video packets instead of interleaving by timestamp.
+
+Fix:
+- WebM and MKV packet muxing now compares packet timestamps and writes them in
+  time order (PTS/DTS-based interleaving).
+- MP4 keeps the previous 5fps mux path unchanged.

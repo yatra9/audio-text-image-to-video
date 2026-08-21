@@ -77,6 +77,9 @@ grep -F -- "--enable-demuxer=mp3" "$OBSOLETE_CONFIG" >/dev/null || {
 grep -F -- "--enable-decoder=mp3" "$OBSOLETE_CONFIG" >/dev/null || {
   echo "obsolete config does not enable MP3 decoder" >&2; exit 1;
 }
+grep -F -- "--enable-muxer=matroska" "$OBSOLETE_CONFIG" >/dev/null || {
+  echo "obsolete config does not enable Matroska muxer" >&2; exit 1;
+}
 
 # The app uses asetnsamples to packetize resampled PCM into the exact
 # frame size requested by libopus (normally 960 samples at 48 kHz).
@@ -104,6 +107,9 @@ grep -F -- "--enable-encoder=aac" "$AAC_CONFIG" >/dev/null || {
 grep -F -- "--enable-muxer=mp4" "$AAC_CONFIG" >/dev/null || {
   echo "aac-af config does not enable MP4 muxer" >&2; exit 1;
 }
+grep -F -- "--enable-muxer=matroska" "$AAC_CONFIG" >/dev/null || {
+  echo "aac-af config does not enable Matroska muxer" >&2; exit 1;
+}
 
 # AAC decode path uses the same audio filter graph as MP3.
 if ! grep -F -- "--enable-filter=asetnsamples" "$AAC_CONFIG" >/dev/null; then
@@ -115,6 +121,89 @@ grep -F -- "--enable-filter=asetnsamples" "$AAC_CONFIG" >/dev/null || {
 
 
 log "Downloading/extracting FFmpeg dependencies if needed"
+
+# Resolve FFmpeg version from this libav.js release's root Makefile.
+# v5.4.6.1.1 defines:
+#   FFMPEG_VERSION_MAJOR=6
+#   FFMPEG_VERSION_MINREV=1.1
+FFMPEG_VERSION_MAJOR="$(
+  sed -n 's/^[[:space:]]*FFMPEG_VERSION_MAJOR[[:space:]]*=[[:space:]]*//p' \
+    "$LIBAV_DIR/Makefile" | head -n1 | tr -d '\r'
+)"
+FFMPEG_VERSION_MINREV="$(
+  sed -n 's/^[[:space:]]*FFMPEG_VERSION_MINREV[[:space:]]*=[[:space:]]*//p' \
+    "$LIBAV_DIR/Makefile" | head -n1 | tr -d '\r'
+)"
+
+if [[ -z "$FFMPEG_VERSION_MAJOR" || -z "$FFMPEG_VERSION_MINREV" ]]; then
+  echo "Could not determine FFmpeg version from $LIBAV_DIR/Makefile" >&2
+  exit 1
+fi
+
+FFMPEG_VERSION="${FFMPEG_VERSION_MAJOR}.${FFMPEG_VERSION_MINREV}"
+echo "FFmpeg version: $FFMPEG_VERSION"
+
+# Robust FFmpeg source prefetch.
+# Upstream make downloads:
+#   https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz
+# A transient TLS/reset there used to abort the whole build.
+FFMPEG_TARBALL="$LIBAV_DIR/build/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+mkdir -p "$LIBAV_DIR/build"
+
+if [[ ! -s "$FFMPEG_TARBALL" ]]; then
+  TMP_XZ="$FFMPEG_TARBALL.part"
+  rm -f "$TMP_XZ"
+
+  log "Fetching FFmpeg ${FFMPEG_VERSION} from ffmpeg.org (with retries)"
+  if curl -fL \
+      --retry 6 \
+      --retry-delay 3 \
+      --retry-all-errors \
+      --connect-timeout 20 \
+      --max-time 900 \
+      "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+      -o "$TMP_XZ"; then
+    mv "$TMP_XZ" "$FFMPEG_TARBALL"
+  else
+    rm -f "$TMP_XZ"
+    log "ffmpeg.org failed; falling back to GitHub tag n${FFMPEG_VERSION}"
+
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "$TMP_DIR"' EXIT
+
+    GITHUB_TGZ="$TMP_DIR/ffmpeg.tar.gz"
+    curl -fL \
+      --retry 6 \
+      --retry-delay 3 \
+      --retry-all-errors \
+      --connect-timeout 20 \
+      --max-time 900 \
+      "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG_VERSION}.tar.gz" \
+      -o "$GITHUB_TGZ"
+
+    tar -xzf "$GITHUB_TGZ" -C "$TMP_DIR"
+    GITHUB_DIR="$TMP_DIR/FFmpeg-n${FFMPEG_VERSION}"
+    [[ -d "$GITHUB_DIR" ]] || {
+      echo "GitHub FFmpeg archive did not contain expected directory: $GITHUB_DIR" >&2
+      exit 1
+    }
+
+    mv "$GITHUB_DIR" "$TMP_DIR/ffmpeg-${FFMPEG_VERSION}"
+    (
+      cd "$TMP_DIR"
+      tar -cJf "$TMP_XZ" "ffmpeg-${FFMPEG_VERSION}"
+    )
+    mv "$TMP_XZ" "$FFMPEG_TARBALL"
+    rm -rf "$TMP_DIR"
+    trap - EXIT
+  fi
+fi
+
+[[ -s "$FFMPEG_TARBALL" ]] || {
+  echo "FFmpeg source archive is missing after download attempts." >&2
+  exit 1
+}
+
 make extract
 
 JOBS="$(nproc 2>/dev/null || echo 2)"
@@ -158,7 +247,7 @@ for f in "$OUTPUT_FRONT" "$OUTPUT_FACTORY" "$OUTPUT_WASM" "$BRIDGE_JS"; do
   [[ -s "$f" ]] || { echo "Missing npm dependency output: $f" >&2; exit 1; }
 done
 
-log "Bundling everything into index.html (app v1.23)"
+log "Bundling everything into index.html (app v1.27)"
 python3 "$PROJECT_DIR/scripts/bundle.py" \
   --template "$PROJECT_DIR/app-template.html" \
   --obsolete-front "$OBSOLETE_FRONT" \
@@ -175,7 +264,7 @@ python3 "$PROJECT_DIR/scripts/bundle.py" \
 
 log "Writing build information"
 {
-  echo "libav.js dual-input offline build v1.23"
+  echo "libav.js dual-input offline build v1.27"
   echo "libav.js: $LIBAV_TAG"
   echo "Emscripten: $EMSDK_VERSION"
   echo "MP3/Opus/FLAC/WAV input: locally built upstream obsolete runtime"
