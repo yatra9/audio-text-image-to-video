@@ -1,0 +1,1280 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>スライド + 音声 → WebM v1.22</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 14px 48px; }
+    h1 { font-size: 1.45rem; }
+    h2 { font-size: 1.08rem; margin: 0 0 10px; }
+    h3 { font-size: 1rem; margin: 0; }
+    label { display: block; margin: 12px 0 5px; font-weight: 700; }
+    textarea, select, input, button { font-size: 16px; max-width: 100%; }
+    textarea { width: 100%; min-height: 120px; resize: vertical; box-sizing: border-box; }
+    input[type="text"], input[type="number"] { width: 100%; box-sizing: border-box; padding: 8px 10px; }
+    button { padding: 10px 14px; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: default; }
+    .panel { border: 1px solid #8886; border-radius: 12px; padding: 12px 14px; margin: 14px 0; }
+    .row { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+    .page-card { border: 1px solid #8886; border-radius: 14px; padding: 14px; margin: 14px 0; background: #8881; }
+    .page-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .page-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .muted { opacity: .75; }
+    .help { font-size: .9rem; opacity: .8; margin-top: 5px; line-height: 1.45; }
+    .ok { color: #16803a; }
+    .ng { color: #c62828; }
+    #capability, #audioCapability, #status { white-space: pre-wrap; line-height: 1.5; }
+    .preview-wrap { border: 1px solid #8886; border-radius: 12px; overflow: hidden; background: #111; display: flex; justify-content: center; }
+    #previewCanvas { display: block; width: 100%; height: auto; background: #111; }
+    video { width: 100%; max-height: 520px; background: #111; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+    .range-wrap { display: grid; gap: 4px; }
+    .range-wrap output { font-weight: 700; }
+    .page-settings[hidden], .image-settings[hidden], .text-settings[hidden], .title-settings[hidden], .overlay-settings[hidden] { display: none; }
+    .danger { border-color: #c62828aa; }
+    .summary { font-size: .92rem; opacity: .85; }
+  </style>
+</head>
+<body>
+  <h1>複数ページのスライド + 音声 → WebM v1.22</h1>
+  <p>各ページを「画像のみ / テキストのみ / 背景画像 + テキスト」から選び、表示秒数を指定して音声に合わせてローテーションできます。</p>
+
+  <div class="panel">
+    <strong>この端末の対応状況</strong>
+    <div id="capability">確認中...</div>
+  </div>
+
+  <div class="panel">
+    <h2>動画設定</h2>
+    <div class="row">
+      <div>
+        <label for="ratioPreset">縦横比プリセット</label>
+        <select id="ratioPreset">
+          <option value="custom">カスタム</option>
+          <option value="1:1">1:1</option>
+          <option value="4:5">4:5</option>
+          <option value="16:9" selected>16:9</option>
+          <option value="9:16">9:16</option>
+        </select>
+      </div>
+      <div>
+        <label for="ratioWidth">縦横比: 横</label>
+        <input id="ratioWidth" type="number" min="1" step="1" value="16" />
+      </div>
+      <div>
+        <label for="ratioHeight">縦横比: 縦</label>
+        <input id="ratioHeight" type="number" min="1" step="1" value="9" />
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="swapRatioButton" type="button">縦横反転</button>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="outputWidth">出力サイズ: 幅(px)</label>
+        <input id="outputWidth" type="number" min="4" step="4" value="1920" />
+      </div>
+      <div>
+        <label for="outputHeight">出力サイズ: 高さ(px)</label>
+        <input id="outputHeight" type="number" min="4" step="4" value="1080" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="ratioImagePage">画像から決める</label>
+        <select id="ratioImagePage"></select>
+        <div class="help">「画像のみ」または「背景画像 + テキスト」のページから選べます。</div>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="ratioFromImageButton" type="button">画像から決める</button>
+      </div>
+    </div>
+    <div class="help">出力サイズは幅・高さを直接指定できます。縦横比の変更、プリセット、縦横反転、画像から決めるは、現在の長辺を維持しながらサイズにも反映します。実際の出力サイズは縦横とも4の倍数に丸めます。</div>
+    <div id="timelineSummary" class="summary"></div>
+  </div>
+
+  <div class="panel">
+    <div class="page-head">
+      <h2>ページ</h2>
+      <button id="addPageButton" type="button">＋ ページを追加</button>
+    </div>
+    <div class="help">表示秒数の初期値は5秒です。音声がページ合計時間を超える場合、ページ列を先頭から繰り返します。</div>
+    <div id="pages"></div>
+  </div>
+
+  <div class="panel">
+    <div class="page-head">
+      <h2>ページプレビュー</h2>
+      <span id="previewLabel" class="muted">ページ1</span>
+    </div>
+    <div class="preview-wrap">
+      <canvas id="previewCanvas" width="1280" height="720"></canvas>
+    </div>
+  </div>
+
+  <label for="audioFile">音声</label>
+  <input id="audioFile" type="file" accept="audio/*,.aac" />
+
+  <div class="panel">
+    <strong>選択した音声の対応状況</strong>
+    <div id="audioCapability">音声ファイルを選ぶと対応状況を確認します。</div>
+  </div>
+
+  <div class="toolbar">
+    <button id="makeButton" disabled>動画を作って保存</button>
+  </div>
+
+  <div id="status" class="panel">待機中</div>
+
+  <div class="panel">
+    <strong>作成した動画プレビュー</strong>
+    <video id="videoPreview" controls></video>
+  </div>
+
+  <p class="help">音声は WebCodecs AudioDecoder / AudioEncoder を使わず、AAC / MP3 / Opus / FLAC / WAV を専用libav.jsだけで逐次 demux → decode → 48kHzへresample → Opus encode します。完成 WebM も保存先ファイルへ直接書き込みます。</p>
+  <!-- __EMBED_RUNTIME__ -->
+  <script>
+const FPS = 30;
+const MOBILE_LONG_EDGE = 1280;
+const DESKTOP_LONG_EDGE = 1920;
+
+const pagesEl = document.querySelector('#pages');
+const addPageButton = document.querySelector('#addPageButton');
+const ratioPresetInput = document.querySelector('#ratioPreset');
+const ratioWidthInput = document.querySelector('#ratioWidth');
+const ratioHeightInput = document.querySelector('#ratioHeight');
+const outputWidthInput = document.querySelector('#outputWidth');
+const outputHeightInput = document.querySelector('#outputHeight');
+const swapRatioButton = document.querySelector('#swapRatioButton');
+const ratioImagePageSelect = document.querySelector('#ratioImagePage');
+const ratioFromImageButton = document.querySelector('#ratioFromImageButton');
+const previewCanvas = document.querySelector('#previewCanvas');
+const previewLabel = document.querySelector('#previewLabel');
+const timelineSummary = document.querySelector('#timelineSummary');
+const audioInput = document.querySelector('#audioFile');
+const audioCapabilityEl = document.querySelector('#audioCapability');
+const capabilityEl = document.querySelector('#capability');
+const makeButton = document.querySelector('#makeButton');
+const statusEl = document.querySelector('#status');
+const videoPreview = document.querySelector('#videoPreview');
+
+let pages = [];
+let previewPageId = null;
+let capability = null;
+let selectedAudioProbe = null;
+let probeSerial = 0;
+let videoPreviewUrl = null;
+
+window.addEventListener('DOMContentLoaded', async () => {
+  addPage();
+  syncRatioControlsFromSize();
+  await detectCapabilities();
+  await renderSelectedPreview();
+});
+
+addPageButton.addEventListener('click', () => addPage());
+ratioPresetInput.addEventListener('change', async () => {
+  if (ratioPresetInput.value !== 'custom') {
+    const [rw, rh] = ratioPresetInput.value.split(':').map(Number);
+    applyRatioToSize(rw, rh);
+  }
+  await detectCapabilities();
+  updateTimelineSummary();
+  await renderSelectedPreview();
+});
+[ratioWidthInput, ratioHeightInput].forEach(input => input.addEventListener('change', async () => {
+  applyRatioToSize(Number(ratioWidthInput.value) || 16, Number(ratioHeightInput.value) || 9);
+  await detectCapabilities();
+  updateTimelineSummary();
+  await renderSelectedPreview();
+}));
+[outputWidthInput, outputHeightInput].forEach(input => input.addEventListener('change', async () => {
+  normalizeOutputSizeInputs();
+  syncRatioControlsFromSize();
+  await detectCapabilities();
+  updateTimelineSummary();
+  await renderSelectedPreview();
+}));
+swapRatioButton.addEventListener('click', async () => {
+  const w = ratioWidthInput.value;
+  ratioWidthInput.value = ratioHeightInput.value || 9;
+  ratioHeightInput.value = w || 16;
+  applyRatioToSize(Number(ratioWidthInput.value) || 16, Number(ratioHeightInput.value) || 9);
+  await detectCapabilities();
+  updateTimelineSummary();
+  await renderSelectedPreview();
+});
+ratioFromImageButton.addEventListener('click', async () => {
+  const id = ratioImagePageSelect.value;
+  if (!id) return;
+  const card = pageCard(id);
+  const imageFile = field(card, 'image').files?.[0];
+  if (!imageFile) return;
+  let bitmap = null;
+  try {
+    bitmap = await createImageBitmap(imageFile);
+    const [rw, rh] = simplifyRatio(bitmap.width, bitmap.height);
+    ratioWidthInput.value = rw;
+    ratioHeightInput.value = rh;
+    applyRatioToSize(rw, rh);
+  } finally {
+    try { bitmap?.close(); } catch {}
+  }
+  await detectCapabilities();
+  updateTimelineSummary();
+  await renderSelectedPreview();
+});
+audioInput.addEventListener('change', probeSelectedAudio);
+
+makeButton.addEventListener('click', async () => {
+  const audioFile = audioInput.files?.[0];
+  if (!audioFile) return setStatus('音声を選んでください。');
+  if (!capability?.ok) return setStatus('この端末では必要な機能が使えません。');
+
+  let specs;
+  try { specs = collectPageSpecs(); }
+  catch (error) { return setStatus(`ページ設定エラー:\n${error.message}`); }
+
+  if (!selectedAudioProbe?.ok || selectedAudioProbe.file !== audioFile) {
+    await probeSelectedAudio();
+    if (!selectedAudioProbe?.ok) return setStatus('選択した音声を処理できません。');
+  }
+
+  let outputHandle;
+  try {
+    outputHandle = await window.showSaveFilePicker({
+      suggestedName: 'output.webm',
+      types: [{ description: 'WebM video', accept: { 'video/webm': ['.webm'] } }]
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') return setStatus('保存をキャンセルしました。');
+    return setStatus(`保存先を開けませんでした:\n${error?.message || error}`);
+  }
+
+  makeButton.disabled = true;
+  try {
+    const result = await makeVideo({
+      pageSpecs: specs,
+      audioFile,
+      outputHandle,
+      videoCodec: capability.videoCodec,
+      width: capability.width,
+      height: capability.height,
+      onProgress: setStatus
+    });
+
+    if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    const savedFile = await outputHandle.getFile();
+    videoPreviewUrl = URL.createObjectURL(savedFile);
+    videoPreview.src = videoPreviewUrl;
+    setStatus(
+      `完成しました。\n` +
+      `ページ数: ${result.pageCount}\n` +
+      `1周: ${result.cycleSeconds.toFixed(1)}秒\n` +
+      `動画: ${result.codecLabel} / ${result.width}×${result.height} / ${FPS}fps\n` +
+      `音声: ${result.audioCodecLabel} → Opus\n` +
+      `長さ: ${formatSeconds(result.durationUs / 1_000_000)}\n` +
+      `保存サイズ: ${(savedFile.size / 1024 / 1024).toFixed(1)} MB`
+    );
+  } catch (error) {
+    console.error(error);
+    setStatus(`エラー:\n${error?.stack || error}`);
+  } finally {
+    updateMakeButton();
+  }
+});
+
+function addPage(initial = {}) {
+  const id = crypto.randomUUID?.() || `p-${Date.now()}-${Math.random()}`;
+  const page = { id };
+  pages.push(page);
+  const card = document.createElement('div');
+  card.className = 'page-card';
+  card.dataset.pageId = id;
+  card.innerHTML = `
+    <div class="page-head">
+      <h3 class="page-title"></h3>
+      <div class="page-actions">
+        <button type="button" data-action="preview">プレビュー</button>
+        <button type="button" data-action="up">↑</button>
+        <button type="button" data-action="down">↓</button>
+        <button type="button" data-action="remove">削除</button>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>ページ種類</label>
+        <select data-field="type">
+          <option value="image">画像のみ</option>
+          <option value="text">テキストのみ</option>
+          <option value="imageText">背景画像 + テキスト</option>
+        </select>
+      </div>
+      <div>
+        <label>表示秒数</label>
+        <input data-field="duration" type="number" min="0.5" max="600" step="0.5" value="5" />
+      </div>
+    </div>
+
+    <div class="image-settings">
+      <label>画像</label>
+      <input data-field="image" type="file" accept="image/*" />
+    </div>
+
+    <div class="text-settings" hidden>
+      <div class="row">
+        <div>
+          <label>テキストレイアウト</label>
+          <select data-field="layout">
+            <option value="single">本文のみ</option>
+            <option value="titleBody">タイトル + 本文</option>
+          </select>
+        </div>
+        <div>
+          <label>揃え</label>
+          <select data-field="align">
+            <option value="left">左揃え</option>
+            <option value="center" selected>中央揃え</option>
+            <option value="right">右揃え</option>
+          </select>
+        </div>
+        <div>
+          <label>フォント</label>
+          <select data-field="font">
+            <option value="gothic">ゴシック</option>
+            <option value="mincho">明朝</option>
+          </select>
+        </div>
+      </div>
+      <div class="title-settings" hidden>
+        <label>タイトル</label>
+        <input data-field="title" type="text" placeholder="タイトルを入力" />
+      </div>
+      <label>本文</label>
+      <textarea data-field="body" placeholder="本文を入力。改行も使えます。"></textarea>
+      <div class="row">
+        <div><label>背景色</label><input data-field="bgColor" type="color" value="#faf7f2" /></div>
+        <div><label>文字色</label><input data-field="textColor" type="color" value="#111111" /></div>
+      </div>
+      <div class="row">
+        <div class="range-wrap title-settings" hidden><label>タイトルの文字サイズ</label><input data-field="titleFontScale" type="range" min="50" max="300" step="5" value="100" /><output>100%</output></div>
+        <div class="range-wrap"><label>本文の文字サイズ</label><input data-field="bodyFontScale" type="range" min="50" max="300" step="5" value="100" /><output>100%</output></div>
+        <div class="range-wrap"><label>行間</label><input data-field="lineHeight" type="range" min="1.10" max="2.00" step="0.05" value="1.45" /><output>1.45</output></div>
+      </div>
+      <div class="overlay-settings" hidden>
+        <div class="range-wrap"><label>背景画像の暗さ</label><input data-field="overlay" type="range" min="0" max="0.8" step="0.05" value="0.35" /><output>35%</output></div>
+      </div>
+    </div>`;
+
+  pagesEl.appendChild(card);
+  if (initial.type) field(card, 'type').value = initial.type;
+  bindPageCard(card);
+  previewPageId ??= id;
+  updatePageCard(card);
+  updatePageNumbers();
+  updateImageRatioControls();
+  updateTimelineSummary();
+  updateMakeButton();
+}
+
+function bindPageCard(card) {
+  card.addEventListener('click', async (event) => {
+    const action = event.target?.dataset?.action;
+    if (!action) return;
+    const id = card.dataset.pageId;
+    const index = pages.findIndex(p => p.id === id);
+    if (action === 'preview') {
+      previewPageId = id;
+      await renderSelectedPreview();
+    } else if (action === 'remove') {
+      if (pages.length === 1) return alert('ページは最低1つ必要です。');
+      pages.splice(index, 1);
+      card.remove();
+      if (previewPageId === id) previewPageId = pages[Math.max(0, index - 1)]?.id || pages[0].id;
+      updatePageNumbers(); updateImageRatioControls(); updateTimelineSummary(); updateMakeButton(); await renderSelectedPreview();
+    } else if (action === 'up' && index > 0) {
+      [pages[index - 1], pages[index]] = [pages[index], pages[index - 1]];
+      pagesEl.insertBefore(card, card.previousElementSibling);
+      updatePageNumbers(); updateImageRatioControls(); updateTimelineSummary();
+    } else if (action === 'down' && index < pages.length - 1) {
+      [pages[index], pages[index + 1]] = [pages[index + 1], pages[index]];
+      pagesEl.insertBefore(card.nextElementSibling, card);
+      updatePageNumbers(); updateImageRatioControls(); updateTimelineSummary();
+    }
+  });
+
+  card.addEventListener('change', async (event) => {
+    const name = event.target?.dataset?.field;
+    if (!name) return;
+    updatePageCard(card);
+    updateImageRatioControls();
+    updateTimelineSummary();
+    updateMakeButton();
+    if (card.dataset.pageId === previewPageId) await renderSelectedPreview();
+  });
+  card.addEventListener('input', (event) => {
+    const name = event.target?.dataset?.field;
+    if (!name) return;
+    if (name === 'bodyFontScale' || name === 'titleFontScale') event.target.nextElementSibling.value = `${event.target.value}%`;
+    if (name === 'lineHeight') event.target.nextElementSibling.value = Number(event.target.value).toFixed(2);
+    if (name === 'overlay') event.target.nextElementSibling.value = `${Math.round(Number(event.target.value) * 100)}%`;
+    updateTimelineSummary(); updateMakeButton();
+  });
+}
+
+function field(card, name) { return card.querySelector(`[data-field="${name}"]`); }
+
+function updatePageCard(card) {
+  const type = field(card, 'type').value;
+  const textSettings = card.querySelector('.text-settings');
+  const imageSettings = card.querySelector('.image-settings');
+  const titleSettings = card.querySelectorAll('.title-settings');
+  const overlaySettings = card.querySelector('.overlay-settings');
+  imageSettings.hidden = type === 'text';
+  textSettings.hidden = type === 'image';
+  overlaySettings.hidden = type !== 'imageText';
+  titleSettings.forEach(el => { el.hidden = field(card, 'layout').value !== 'titleBody'; });
+}
+
+function updatePageNumbers() {
+  pages.forEach((p, i) => {
+    const card = pageCard(p.id);
+    card.querySelector('.page-title').textContent = `ページ ${i + 1}`;
+  });
+}
+
+function updateTimelineSummary() {
+  let total = 0;
+  for (const p of pages) {
+    const card = pageCard(p.id);
+    total += Math.max(0, Number(field(card, 'duration').value) || 0);
+  }
+  const target = getTargetSize();
+  timelineSummary.textContent = `ページ数: ${pages.length} / 1周の合計: ${total.toFixed(1)}秒 / 指定比率: ${target.widthRatio}:${target.heightRatio} / 出力: ${target.width}×${target.height}`;
+}
+
+function getImageRatioCandidates() {
+  return pages.map((p, index) => {
+    const card = pageCard(p.id);
+    const type = field(card, 'type').value;
+    const imageFile = field(card, 'image').files?.[0] || null;
+    if (!imageFile || (type !== 'image' && type !== 'imageText')) return null;
+    return { id: p.id, index, type, imageFile };
+  }).filter(Boolean);
+}
+
+function updateImageRatioControls() {
+  const current = ratioImagePageSelect.value;
+  const candidates = getImageRatioCandidates();
+  ratioImagePageSelect.innerHTML = '';
+  if (!candidates.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '画像ページがありません';
+    ratioImagePageSelect.appendChild(option);
+    ratioImagePageSelect.disabled = true;
+    ratioFromImageButton.disabled = true;
+    return;
+  }
+
+  for (const candidate of candidates) {
+    const option = document.createElement('option');
+    option.value = candidate.id;
+    option.textContent = `ページ ${candidate.index + 1} (${candidate.type === 'image' ? '画像のみ' : '画像背景+文字'})`;
+    ratioImagePageSelect.appendChild(option);
+  }
+  const found = candidates.some(x => x.id === current);
+  ratioImagePageSelect.value = found ? current : candidates[0].id;
+  ratioImagePageSelect.disabled = false;
+  ratioFromImageButton.disabled = false;
+}
+
+function pageCard(id) { return pagesEl.querySelector(`[data-page-id="${id}"]`); }
+
+function collectPageSpecs() {
+  return pages.map((p, i) => collectPageSpec(pageCard(p.id), i));
+}
+
+function collectPageSpec(card, index) {
+  const type = field(card, 'type').value;
+  const duration = Number(field(card, 'duration').value);
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error(`ページ${index + 1}: 表示秒数を0より大きくしてください。`);
+  const imageFile = field(card, 'image').files?.[0] || null;
+  if ((type === 'image' || type === 'imageText') && !imageFile) throw new Error(`ページ${index + 1}: 画像を選んでください。`);
+
+  const layoutMode = field(card, 'layout').value;
+  const title = field(card, 'title').value;
+  const body = field(card, 'body').value;
+  if (type !== 'image') {
+    if (layoutMode === 'titleBody') {
+      if (!title.trim() && !body.trim()) throw new Error(`ページ${index + 1}: タイトルまたは本文を入力してください。`);
+    } else if (!body.trim()) {
+      throw new Error(`ページ${index + 1}: 本文を入力してください。`);
+    }
+  }
+
+  return {
+    type, duration, imageFile, layoutMode, title, body,
+    align: field(card, 'align').value,
+    fontPreset: field(card, 'font').value,
+    bgColor: field(card, 'bgColor').value,
+    textColor: field(card, 'textColor').value,
+    bodyFontScale: Number(field(card, 'bodyFontScale').value) / 100,
+    titleFontScale: Number(field(card, 'titleFontScale').value) / 100,
+    lineHeightRatio: Number(field(card, 'lineHeight').value),
+    overlay: Number(field(card, 'overlay').value)
+  };
+}
+
+async function renderSelectedPreview() {
+  resizePreviewCanvas();
+  const id = previewPageId || pages[0]?.id;
+  if (!id) return;
+  const index = pages.findIndex(p => p.id === id);
+  const card = pageCard(id);
+  previewLabel.textContent = `ページ ${index + 1}`;
+  const ctx = previewCanvas.getContext('2d', { alpha: false });
+  try {
+    const spec = collectPageSpec(card, index);
+    await renderPageIntoCanvas(previewCanvas, spec, previewCanvas.width, previewCanvas.height, null);
+    setStatus(`ページ ${index + 1} のプレビューを更新しました。`);
+  } catch (error) {
+    drawPreviewPlaceholder(ctx, previewCanvas.width, previewCanvas.height, error.message);
+  }
+}
+
+function normalizeOutputSizeInputs() {
+  outputWidthInput.value = roundToMultipleOf4(Math.max(4, Number(outputWidthInput.value) || 1920));
+  outputHeightInput.value = roundToMultipleOf4(Math.max(4, Number(outputHeightInput.value) || 1080));
+}
+
+function syncRatioControlsFromSize() {
+  normalizeOutputSizeInputs();
+  const width = Number(outputWidthInput.value) || 1920;
+  const height = Number(outputHeightInput.value) || 1080;
+  const [rw, rh] = simplifyRatio(width, height);
+  ratioWidthInput.value = rw;
+  ratioHeightInput.value = rh;
+  const preset = `${rw}:${rh}`;
+  ratioPresetInput.value = ['1:1', '4:5', '16:9', '9:16'].includes(preset) ? preset : 'custom';
+}
+
+function applyRatioToSize(widthRatio, heightRatio) {
+  const rw = Math.max(1, Math.round(widthRatio) || 16);
+  const rh = Math.max(1, Math.round(heightRatio) || 9);
+  const currentLongEdge = Math.max(4, Number(outputWidthInput.value) || 1920, Number(outputHeightInput.value) || 1080);
+  const scale = currentLongEdge / Math.max(rw, rh);
+  outputWidthInput.value = roundToMultipleOf4(rw * scale);
+  outputHeightInput.value = roundToMultipleOf4(rh * scale);
+  syncRatioControlsFromSize();
+}
+
+function getRequestedRatio() {
+  const widthRatio = Math.max(1, Number(ratioWidthInput.value) || 16);
+  const heightRatio = Math.max(1, Number(ratioHeightInput.value) || 9);
+  return { widthRatio, heightRatio };
+}
+
+function roundToMultipleOf4(value) {
+  return Math.max(4, Math.round(value / 4) * 4);
+}
+
+function simplifyRatio(width, height) {
+  const gcd = (a, b) => b ? gcd(b, a % b) : a;
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+  const d = gcd(w, h);
+  return [Math.round(w / d), Math.round(h / d)];
+}
+
+function getTargetSize() {
+  normalizeOutputSizeInputs();
+  const width = Number(outputWidthInput.value) || 1920;
+  const height = Number(outputHeightInput.value) || 1080;
+  const [widthRatio, heightRatio] = simplifyRatio(width, height);
+  return { width, height, widthRatio, heightRatio };
+}
+
+function resizePreviewCanvas() {
+  const { width, height } = getTargetSize();
+  previewCanvas.width = width;
+  previewCanvas.height = height;
+}
+
+async function detectCapabilities() {
+  const reasons = [];
+  const mobile = isMobileDevice();
+  const target = getTargetSize();
+  const ratioLabel = `${target.widthRatio}:${target.heightRatio}`;
+  if (!window.isSecureContext) reasons.push('HTTPS または localhost で開いてください。');
+  if (!('showSaveFilePicker' in window)) reasons.push('File System Access API に対応していません。');
+  if (!('VideoEncoder' in window)) reasons.push('VideoEncoder に対応していません。');
+  if (!('VideoFrame' in window)) reasons.push('WebCodecs の VideoFrame に対応していません。');
+  if (!('OffscreenCanvas' in window)) reasons.push('OffscreenCanvas に対応していません。');
+
+  let selectedVideo = null;
+  if (!reasons.length) {
+    selectedVideo = await pickVideoCodec(target.width, target.height);
+    if (!selectedVideo) reasons.push('VP9 / VP8 エンコードに対応していません。');
+  }
+  capability = { ok: !reasons.length, mobile, ...target, videoCodec: selectedVideo?.codec || null, codecLabel: selectedVideo?.label || null };
+  resizePreviewCanvas();
+  capabilityEl.className = capability.ok ? 'ok' : 'ng';
+  capabilityEl.textContent = capability.ok
+    ? `✓ 利用可能\n端末: ${mobile ? 'スマホ/モバイル' : 'デスクトップ'}\n解像度: ${target.width}×${target.height}\n映像: ${selectedVideo.label}`
+    : `✗ 実行できません\n- ${reasons.join('\n- ')}`;
+  updateMakeButton();
+}
+
+function getInputLibAVFactory(file) {
+  const lower = (file?.name || '').toLowerCase();
+  const mime = (file?.type || '').toLowerCase();
+  const aacFamily =
+    lower.endsWith('.aac') ||
+    lower.endsWith('.m4a') ||
+    lower.endsWith('.mp4') ||
+    mime.includes('aac') ||
+    mime.includes('mp4');
+
+  if (!window.LibAVInput54) {
+    throw new Error('埋め込み済み音声用 libav.js frontend を初期化できませんでした。');
+  }
+
+  if (aacFamily) {
+    if (!window.__LIBAV_AAC_FACTORY_URL__ || !window.__LIBAV_AAC_WASM_URL__) {
+      throw new Error('埋め込み済み AAC runtime がありません。');
+    }
+    console.info('[v1.22] input variant = aac-af / native frontend loader');
+    return {
+      front: window.LibAVInput54,
+      toImport: window.__LIBAV_AAC_FACTORY_URL__,
+      wasmurl: window.__LIBAV_AAC_WASM_URL__,
+      label: 'aac-af'
+    };
+  }
+
+  if (!window.__LIBAV_MP3_FACTORY_URL__ || !window.__LIBAV_MP3_WASM_URL__) {
+    throw new Error('埋め込み済み obsolete runtime がありません。');
+  }
+  console.info('[v1.22] input variant = obsolete / native frontend loader');
+  return {
+    front: window.LibAVInput54,
+    toImport: window.__LIBAV_MP3_FACTORY_URL__,
+    wasmurl: window.__LIBAV_MP3_WASM_URL__,
+    label: 'obsolete'
+  };
+}
+
+async function createInputLibAV(inputFactory) {
+  try {
+    return await inputFactory.front.LibAV({
+      noworker: true,
+      toImport: inputFactory.toImport,
+      wasmurl: inputFactory.wasmurl
+    });
+  } catch (error) {
+    if (error && typeof error === 'object' && error.isTrusted) {
+      throw new Error(
+        `埋め込み済み ${inputFactory?.label || 'input'} runtime の読み込みに失敗しました。`
+      );
+    }
+    throw error;
+  }
+}
+
+async function initAudioDecoder(libav, stream) {
+  // libav.js 5.4.x API: codec id/name + codecpar pointer
+  return await libav.ff_init_decoder(stream.codec_id, stream.codecpar);
+}
+
+async function readFirstDecodedFrames(libav, fmtCtx, stream, decoder) {
+  const [, decCtx, decPkt, decFrame] = decoder;
+  for (;;) {
+    const [result, packets] = await libav.ff_read_frame_multi(fmtCtx, decPkt, { limit: 256 * 1024 });
+    const list = packets?.[stream.index] || [];
+    if (list.length) {
+      const frames = await libav.ff_decode_multi(decCtx, decPkt, decFrame, list, { ignoreErrors: false });
+      if (frames.length) return { frames, result };
+    }
+    if (result === libav.AVERROR_EOF) break;
+    if (result === -libav.EAGAIN || result === 0) continue;
+    if (result < 0) throw new Error(`音声 demux エラー: ${result}`);
+  }
+  const frames = await libav.ff_decode_multi(decCtx, decPkt, decFrame, [], true);
+  return { frames, result: libav.AVERROR_EOF };
+}
+
+function formatCaughtError(error) {
+  if (error instanceof Error) return error.stack || error.message || String(error);
+  if (typeof error === 'string') return error;
+  if (typeof error === 'number') return `libav.js error code: ${error}`;
+  if (error && typeof error === 'object' && error.isTrusted) return '外部スクリプト / WASM の読み込みに失敗しました。';
+  try { return JSON.stringify(error); } catch { return String(error); }
+}
+
+
+async function openAudioInput(libav, name, file) {
+  const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  console.info('[v1.22 audio head]', {
+    fileName: file.name,
+    fileSize: file.size,
+    hex: Array.from(head).map(v => v.toString(16).padStart(2, '0')).join(' ')
+  });
+
+  // This is the same Blob/File path that successfully handled MP3 in v8.0.4.
+  await libav.mkreadaheadfile(name, file);
+  const init = await libav.ff_init_demuxer_file(name);
+  return { init, mode: 'readahead' };
+}
+
+async function closeAudioInput(libav, name, mode) {
+  if (!libav || !name) return;
+  if (mode === 'readahead') {
+    try { await libav.unlinkreadaheadfile(name); } catch {}
+  } else {
+    try { await libav.unlink(name); } catch {}
+  }
+}
+
+async function probeSelectedAudio() {
+  const serial = ++probeSerial;
+  const file = audioInput.files?.[0];
+  selectedAudioProbe = null; updateMakeButton();
+  if (!file || !capability?.ok) return;
+  audioCapabilityEl.className = ''; audioCapabilityEl.textContent = 'libav.js でデコード確認中...';
+  let libav = null, inputName = null, decoder = null, fmtCtx = null, inputMode = null;
+  try {
+    const inputFactory = getInputLibAVFactory(file);
+    if (!inputFactory) throw new Error('この音声形式用の libav.js を読み込めませんでした。');
+    libav = await createInputLibAV(inputFactory);
+    let mp3InputFormat = null;
+    let mp3DecoderByName = null;
+    let mp3floatDecoderByName = null;
+
+    try {
+      if (typeof libav.av_find_input_format === 'function') {
+        mp3InputFormat = await libav.av_find_input_format('mp3');
+      }
+    } catch (e) {
+      mp3InputFormat = `lookup-error: ${String(e)}`;
+    }
+
+    try {
+      if (typeof libav.avcodec_find_decoder_by_name === 'function') {
+        mp3DecoderByName = await libav.avcodec_find_decoder_by_name('mp3');
+        mp3floatDecoderByName = await libav.avcodec_find_decoder_by_name('mp3float');
+      }
+    } catch (e) {
+      mp3DecoderByName = `lookup-error: ${String(e)}`;
+    }
+
+    console.info('[v1.22 libav diagnostic]', {
+      inputFrontVER: inputFactory?.front?.VER ?? null,
+      inputFrontCONFIG: inputFactory?.front?.CONFIG ?? null,
+      outputFrontVER: window.LibAVOutput?.VER ?? null,
+      outputFrontCONFIG: window.LibAVOutput?.CONFIG ?? null,
+      sameFrontendObject: window.LibAVInput54 === window.LibAVOutput,
+      hasAvFindInputFormat: typeof libav.av_find_input_format === 'function',
+      mp3InputFormat,
+      hasDecoderLookup: typeof libav.avcodec_find_decoder_by_name === 'function',
+      mp3DecoderByName,
+      mp3floatDecoderByName,
+      hasDemuxHelper: typeof libav.ff_init_demuxer_file === 'function',
+      hasReadahead: typeof libav.mkreadaheadfile === 'function'
+    });
+    const selectedLower = (file?.name || '').toLowerCase();
+    if (selectedLower.endsWith('.mp3') && (!mp3InputFormat || (!mp3DecoderByName && !mp3floatDecoderByName))) {
+      throw new Error(
+        `MP3 runtime self-check failed v1.22: demuxer=${mp3InputFormat}, decoder=${mp3DecoderByName}, mp3float=${mp3floatDecoderByName}`
+      );
+    }
+    inputName = makeInputName(file);
+    const opened = await openAudioInput(libav, inputName, file);
+    inputMode = opened.mode;
+    const init = opened.init;
+    fmtCtx = init[0];
+    const audioStream = init[1].find(s => s.codec_type === libav.AVMEDIA_TYPE_AUDIO || s.codec_type === 1);
+    if (!audioStream) throw new Error('音声ストリームが見つかりません。');
+    decoder = await initAudioDecoder(libav, audioStream);
+    const first = await readFirstDecodedFrames(libav, fmtCtx, audioStream, decoder);
+    const frame = first.frames[0];
+    if (!frame) throw new Error('音声をデコードできませんでした。');
+    const channels = frame.channels || frame.ch_layout?.nb_channels || (frame.channel_layout === 4 ? 1 : frame.channel_layout === 3 ? 2 : 0);
+    const sampleRate = frame.sample_rate || 0;
+    if (!channels || !sampleRate) throw new Error('デコード後の音声形式を取得できませんでした。');
+    if (serial !== probeSerial) return;
+    selectedAudioProbe = { ok: true, file, codecId: audioStream.codec_id, sampleRate, channels };
+    audioCapabilityEl.className = 'ok';
+    audioCapabilityEl.textContent = `✓ libav.js で処理可能
+入力: codec_id ${audioStream.codec_id}
+${sampleRate} Hz / ${channels}ch → 48kHz / ${channels === 1 ? 'mono' : 'stereo'} / Opus`;
+  } catch (error) {
+    if (serial !== probeSerial) return;
+    selectedAudioProbe = { ok: false, file, error };
+    audioCapabilityEl.className = 'ng';
+    audioCapabilityEl.textContent = `✗ 処理できません
+${formatCaughtError(error)}`;
+  } finally {
+    try { if (decoder && libav) await libav.ff_free_decoder(decoder[1], decoder[2], decoder[3]); } catch {}
+    try { if (fmtCtx && libav) await libav.avformat_close_input_js(fmtCtx); } catch {}
+    try { if (inputName && libav) await closeAudioInput(libav, inputName, inputMode); } catch {}
+    try { if (libav) await libav.terminate(); } catch {}
+    updateMakeButton();
+  }
+}
+
+async function pickVideoCodec(width, height) {
+  for (const c of [{ codec: 'vp09.00.10.08', label: 'VP9' }, { codec: 'vp8', label: 'VP8' }]) {
+    try {
+      const s = await VideoEncoder.isConfigSupported({ codec: c.codec, width, height, bitrate: Math.max(2e6, Math.round(width * height / 600)), framerate: FPS });
+      if (s.supported) return c;
+    } catch {}
+  }
+  return null;
+}
+
+function updateMakeButton() {
+  let pagesValid = true;
+  try { collectPageSpecs(); } catch { pagesValid = false; }
+  makeButton.disabled = !(capability?.ok && selectedAudioProbe?.ok && pagesValid);
+}
+function setStatus(s) { statusEl.textContent = s; }
+function formatSeconds(s) { const m = Math.floor(s / 60), r = s - m * 60; return m ? `${m}分 ${r.toFixed(1)}秒` : `${r.toFixed(1)}秒`; }
+function makeInputName(file) { const ext = file.name.includes('.') ? `.${file.name.split('.').pop().replace(/[^a-zA-Z0-9]/g, '')}` : ''; return `input-audio${ext}`; }
+function isMobileDevice() { if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') return navigator.userAgentData.mobile; return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent); }
+
+class BufferStream extends ReadableStream {
+  constructor() {
+    const state = { buffer: [], wake: null };
+    super({ async pull(controller) { while (!state.buffer.length) await new Promise(r => state.wake = r); const next = state.buffer.shift(); next === null ? controller.close() : controller.enqueue(next); } });
+    this.state = state;
+  }
+  push(v) { this.state.buffer.push(v); if (this.state.wake) { const w = this.state.wake; this.state.wake = null; w(); } }
+}
+class DirectFileWriter {
+  constructor(w) { this.writable = w; this.chain = Promise.resolve(); this.error = null; this.maxPosition = 0; }
+  enqueue(position, data) { if (this.error) return; const copy = data.slice(); this.maxPosition = Math.max(this.maxPosition, position + copy.byteLength); this.chain = this.chain.then(() => this.writable.write({ type: 'write', position, data: copy })).catch(e => { this.error = e; throw e; }); }
+  async finish() { await this.chain; if (this.error) throw this.error; await this.writable.truncate(this.maxPosition); await this.writable.close(); }
+  async abort(reason) { try { await this.writable.abort(reason); } catch {} }
+}
+class AudioClock {
+  constructor() { this.endUs = 0; this.done = false; this.error = null; this.waiters = new Set(); }
+  advance(v) { if (v > this.endUs) this.endUs = v; this.signal(); }
+  finish() { this.done = true; this.signal(); }
+  fail(e) { this.error = e; this.done = true; this.signal(); }
+  signal() { for (const r of this.waiters) r(); this.waiters.clear(); }
+  async waitForChange(prev) { if (this.error) throw this.error; if (this.done || this.endUs !== prev) return; await new Promise(r => this.waiters.add(r)); if (this.error) throw this.error; }
+}
+
+async function preparePages(pageSpecs) {
+  const prepared = [];
+  for (const spec of pageSpecs) {
+    const p = { ...spec, bitmap: null };
+    if (spec.imageFile) p.bitmap = await createImageBitmap(spec.imageFile);
+    prepared.push(p);
+  }
+  return prepared;
+}
+function closePreparedPages(prepared) { for (const p of prepared || []) try { p.bitmap?.close(); } catch {} }
+
+function pageAtTime(prepared, seconds) {
+  const total = prepared.reduce((a, p) => a + p.duration, 0);
+  if (total <= 0) return { page: prepared[0], index: 0 };
+  let t = seconds % total;
+  for (let i = 0; i < prepared.length; i++) {
+    if (t < prepared[i].duration) return { page: prepared[i], index: i };
+    t -= prepared[i].duration;
+  }
+  return { page: prepared[prepared.length - 1], index: prepared.length - 1 };
+}
+
+async function makeVideo({ pageSpecs, audioFile, outputHandle, videoCodec, width, height, onProgress }) {
+  let inputLibav = null, outputLibav = null, inputName = null, inputMode = null, directWriter = null;
+  let muxer = null, muxPacketPtr = null, preparedPages = null;
+  let decoder = null, inputFmtCtx = null;
+  let audioEncoder = null, audioCodecpar = null, filterGraph = null;
+
+  try {
+    const writable = await outputHandle.createWritable();
+    directWriter = new DirectFileWriter(writable);
+    onProgress('ページ素材を準備中...');
+    preparedPages = await preparePages(pageSpecs);
+    const sourceCanvas = new OffscreenCanvas(width, height);
+    let renderedPageIndex = -1;
+
+    const inputFactory = getInputLibAVFactory(audioFile);
+    if (!inputFactory || !window.LibAVOutput) throw new Error('必要な libav.js runtime を読み込めませんでした。');
+    [inputLibav, outputLibav] = await Promise.all([
+      createInputLibAV(inputFactory),
+      window.LibAVOutput.LibAV(window.__LIBAV_OFFLINE_EMBEDDED__ ? { noworker: true, noes6: true } : { noworker: true })
+    ]);
+
+    inputName = makeInputName(audioFile);
+    const openedInput = await openAudioInput(inputLibav, inputName, audioFile);
+    inputMode = openedInput.mode;
+    const demuxInit = openedInput.init;
+    inputFmtCtx = demuxInit[0];
+    const audioStream = demuxInit[1].find(s => s.codec_type === inputLibav.AVMEDIA_TYPE_AUDIO || s.codec_type === 1);
+    if (!audioStream) throw new Error('音声ストリームが見つかりません。');
+    decoder = await initAudioDecoder(inputLibav, audioStream);
+    const [, decCtx, decPkt, decFrame] = decoder;
+
+    const videoConfig = {
+      codec: videoCodec,
+      width,
+      height,
+      bitrate: Math.max(2e6, Math.round(width * height / 600)),
+      framerate: FPS
+    };
+    const videoStreamInfo = await LibAVWebCodecsBridge.configToVideoStream(outputLibav, videoConfig);
+
+    const videoOut = new BufferStream();
+    const audioOut = new BufferStream();
+    const videoReader = videoOut.getReader();
+    const audioReader = audioOut.getReader();
+    const audioClock = new AudioClock();
+    let pipelineError = null;
+
+    let resolveAudioReady, rejectAudioReady;
+    const audioReady = new Promise((resolve, reject) => { resolveAudioReady = resolve; rejectAudioReady = reject; });
+
+    const videoEncoder = new VideoEncoder({
+      output: (chunk, metadata) => videoOut.push({ chunk, metadata }),
+      error: e => { pipelineError = e; videoOut.push(null); }
+    });
+    videoEncoder.configure(videoConfig);
+
+    const audioProducer = (async () => {
+      let filterSrc = null, filterSink = null;
+      let audioEncCtx = null, audioEncFrame = null, audioEncPkt = null, audioFrameSize = 960;
+      let sampleCursor = 0;
+      let audioChannels = 0;
+      let initialized = false;
+
+      const initializeAudioPipeline = async (firstFrame) => {
+        if (initialized) return;
+        const inputChannels = firstFrame.channels || firstFrame.ch_layout?.nb_channels || (firstFrame.channel_layout === 4 ? 1 : firstFrame.channel_layout === 3 ? 2 : 0);
+        if (!inputChannels) throw new Error('音声チャンネル数を取得できません。');
+        audioChannels = inputChannels === 1 ? 1 : 2;
+        const outLayout = audioChannels === 1 ? 4 : 3; // AV_CH_LAYOUT_MONO / STEREO
+
+        const enc = await outputLibav.ff_init_encoder('libopus', {
+          ctx: {
+            bit_rate: audioChannels === 1 ? 96000 : 128000,
+            sample_fmt: outputLibav.AV_SAMPLE_FMT_FLT,
+            sample_rate: 48000,
+            channel_layout: outLayout,
+            channels: audioChannels
+          },
+          time_base: [1, 48000]
+        });
+        audioEncoder = enc;
+        audioEncCtx = enc[1];
+        audioEncFrame = enc[2];
+        audioEncPkt = enc[3];
+        audioFrameSize = enc[4] || 960;
+
+        audioCodecpar = await outputLibav.avcodec_parameters_alloc();
+        await outputLibav.avcodec_parameters_from_context(audioCodecpar, audioEncCtx);
+
+        const inLayout = firstFrame.channel_layout || (inputChannels === 1 ? 4 : 3);
+        const inputSettings = {
+          sample_rate: firstFrame.sample_rate,
+          sample_fmt: firstFrame.format,
+          channel_layout: inLayout,
+          time_base: [firstFrame.time_base_num || 1, firstFrame.time_base_den || firstFrame.sample_rate]
+        };
+        const outputSettings = {
+          sample_rate: 48000,
+          sample_fmt: inputLibav.AV_SAMPLE_FMT_FLT,
+          channel_layout: outLayout,
+          time_base: [1, 48000],
+          frame_size: audioFrameSize
+        };
+        filterGraph = await inputLibav.ff_init_filter_graph(
+          `aresample=48000,asetnsamples=n=${audioFrameSize}:p=1`,
+          inputSettings,
+          outputSettings
+        );
+        filterSrc = filterGraph[1];
+        filterSink = filterGraph[2];
+        initialized = true;
+        resolveAudioReady({
+          streamInfo: [audioCodecpar, 1, 48000],
+          channels: audioChannels,
+          sampleRate: 48000,
+          codecLabel: 'libav.js → libopus'
+        });
+      };
+
+      const encodeFiltered = async (filtered, fin = false) => {
+        if (!initialized) return;
+        for (const frame of filtered) {
+          frame.pts = sampleCursor;
+          frame.time_base_num = 1;
+          frame.time_base_den = 48000;
+          sampleCursor += frame.nb_samples || audioFrameSize;
+        }
+        if (filtered.length) {
+          const packets = await outputLibav.ff_encode_multi(audioEncCtx, audioEncFrame, audioEncPkt, filtered, false);
+          for (const packet of packets) {
+            packet.stream_index = 1;
+            packet.time_base_num = 1;
+            packet.time_base_den = 48000;
+            audioOut.push(packet);
+          }
+          audioClock.advance(Math.round(sampleCursor * 1e6 / 48000));
+        }
+        if (fin) {
+          const packets = await outputLibav.ff_encode_multi(audioEncCtx, audioEncFrame, audioEncPkt, [], true);
+          for (const packet of packets) {
+            packet.stream_index = 1;
+            packet.time_base_num = 1;
+            packet.time_base_den = 48000;
+            audioOut.push(packet);
+          }
+        }
+      };
+
+      const processDecoded = async (frames, finFilter = false) => {
+        if (frames.length && !initialized) await initializeAudioPipeline(frames[0]);
+        if (!initialized) return;
+        const filtered = await inputLibav.ff_filter_multi(filterSrc, filterSink, decFrame, frames, { fin: finFilter });
+        await encodeFiltered(filtered, false);
+      };
+
+      try {
+        onProgress('音声を libav.js でデコード中...');
+        for (;;) {
+          const [result, packets] = await inputLibav.ff_read_frame_multi(inputFmtCtx, decPkt, { limit: 256 * 1024 });
+          const list = packets?.[audioStream.index] || [];
+          if (list.length) {
+            const frames = await inputLibav.ff_decode_multi(decCtx, decPkt, decFrame, list, { ignoreErrors: false });
+            await processDecoded(frames, false);
+          }
+          if (result === inputLibav.AVERROR_EOF) break;
+          if (result === -inputLibav.EAGAIN || result === 0) continue;
+          if (result < 0) throw new Error(`音声 demux エラー: ${result}`);
+        }
+
+        const tailFrames = await inputLibav.ff_decode_multi(decCtx, decPkt, decFrame, [], true);
+        await processDecoded(tailFrames, false);
+        if (!initialized) throw new Error('音声フレームをデコードできませんでした。');
+        const filterTail = await inputLibav.ff_filter_multi(filterSrc, filterSink, decFrame, [], { fin: true });
+        await encodeFiltered(filterTail, false);
+        await encodeFiltered([], true);
+        audioClock.finish();
+        audioOut.push(null);
+      } catch (e) {
+        pipelineError = e;
+        audioClock.fail(e);
+        rejectAudioReady(e);
+        audioOut.push(null);
+      }
+    })();
+
+    const frameDurationUs = Math.round(1e6 / FPS);
+    const videoProducer = (async () => {
+      let frameIndex = 0;
+      try {
+        while (true) {
+          if (audioClock.error) throw audioClock.error;
+          const observed = audioClock.endUs;
+          while (frameIndex * frameDurationUs < observed) {
+            while (videoEncoder.encodeQueueSize > 8) await waitForDequeue(videoEncoder);
+            const timestamp = frameIndex * frameDurationUs;
+            const { page, index } = pageAtTime(preparedPages, timestamp / 1e6);
+            if (index !== renderedPageIndex) {
+              await renderPageIntoCanvas(sourceCanvas, page, width, height, page.bitmap);
+              renderedPageIndex = index;
+            }
+            const previousIndex = pageAtTime(preparedPages, Math.max(0, (timestamp - frameDurationUs) / 1e6)).index;
+            const frame = new VideoFrame(sourceCanvas, { timestamp, duration: frameDurationUs });
+            videoEncoder.encode(frame, { keyFrame: frameIndex === 0 || index !== previousIndex });
+            frame.close();
+            frameIndex++;
+            if (frameIndex % FPS === 0) {
+              onProgress(`処理中... ${formatSeconds(audioClock.endUs / 1e6)} / 表示ページ ${index + 1}`);
+              await new Promise(requestAnimationFrame);
+            }
+          }
+          if (audioClock.done) break;
+          await audioClock.waitForChange(observed);
+        }
+        await videoEncoder.flush();
+        videoEncoder.close();
+        videoOut.push(null);
+      } catch (e) {
+        pipelineError = e;
+        try { videoEncoder.close(); } catch {}
+        videoOut.push(null);
+      }
+    })();
+
+    const [fv, audioInfo, fa] = await Promise.all([videoReader.read(), audioReady, audioReader.read()]);
+    if (pipelineError) throw pipelineError;
+    if (fv.done || fa.done) throw new Error('最初の映像/音声フレームを作れませんでした。');
+
+    const firstVideoPacket = await LibAVWebCodecsBridge.encodedVideoChunkToPacket(
+      outputLibav, fv.value.chunk, fv.value.metadata, videoStreamInfo, 0
+    );
+    const firstAudioPacket = fa.value;
+
+    const outputName = 'output.webm';
+    await outputLibav.mkwriterdev(outputName);
+    outputLibav.onwrite = (name, position, data) => { if (name === outputName) directWriter.enqueue(position, data); };
+    const [ofc, , pb] = await outputLibav.ff_init_muxer(
+      { filename: outputName, open: true, codecpars: true, format_name: 'webm' },
+      [videoStreamInfo, audioInfo.streamInfo]
+    );
+    muxer = { ofc, pb };
+    muxPacketPtr = await outputLibav.av_packet_alloc();
+    await outputLibav.avformat_write_header(ofc, 0);
+    await outputLibav.ff_write_multi(ofc, muxPacketPtr, [firstVideoPacket, firstAudioPacket]);
+
+    let muxChain = Promise.resolve();
+    const consumeVideo = async () => {
+      for (;;) {
+        const { done, value } = await videoReader.read();
+        if (done) break;
+        muxChain = muxChain.then(async () => {
+          const packet = await LibAVWebCodecsBridge.encodedVideoChunkToPacket(outputLibav, value.chunk, value.metadata, videoStreamInfo, 0);
+          await outputLibav.ff_write_multi(ofc, muxPacketPtr, [packet]);
+        });
+      }
+    };
+    const consumeAudio = async () => {
+      for (;;) {
+        const { done, value } = await audioReader.read();
+        if (done) break;
+        muxChain = muxChain.then(() => outputLibav.ff_write_multi(ofc, muxPacketPtr, [value]));
+      }
+    };
+
+    await Promise.all([consumeVideo(), consumeAudio(), videoProducer, audioProducer]);
+    await muxChain;
+    if (pipelineError) throw pipelineError;
+    await outputLibav.av_write_trailer(ofc);
+    await directWriter.finish();
+    directWriter = null;
+
+    return {
+      pageCount: preparedPages.length,
+      cycleSeconds: preparedPages.reduce((a,p) => a+p.duration,0),
+      width, height,
+      codecLabel: videoCodec.startsWith('vp09') ? 'VP9' : 'VP8',
+      audioCodecLabel: audioInfo.codecLabel,
+      durationUs: audioClock.endUs
+    };
+  } catch (e) {
+    if (directWriter) await directWriter.abort(e);
+    throw e;
+  } finally {
+    closePreparedPages(preparedPages);
+    try { if (decoder && inputLibav) await inputLibav.ff_free_decoder(decoder[1], decoder[2], decoder[3]); } catch {}
+    try { if (inputFmtCtx && inputLibav) await inputLibav.avformat_close_input_js(inputFmtCtx); } catch {}
+    try { if (audioEncoder && outputLibav) await outputLibav.ff_free_encoder(audioEncoder[1], audioEncoder[2], audioEncoder[3]); } catch {}
+    try { if (inputName && inputLibav) await closeAudioInput(inputLibav, inputName, inputMode); } catch {}
+    try { if (muxer && outputLibav) await outputLibav.ff_free_muxer(muxer.ofc, muxer.pb); } catch {}
+    try { if (muxPacketPtr && outputLibav) await outputLibav.av_packet_free(muxPacketPtr); } catch {}
+    try { await inputLibav?.terminate(); } catch {}
+    try { await outputLibav?.terminate(); } catch {}
+  }
+}
+async function renderPageIntoCanvas(canvas, spec, width, height, preparedBitmap = null) {
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) throw new Error('Canvasを初期化できません。');
+  let bitmap = preparedBitmap;
+  let ownsBitmap = false;
+  if (!bitmap && spec.imageFile) { bitmap = await createImageBitmap(spec.imageFile); ownsBitmap = true; }
+  try {
+    if (spec.type === 'image') {
+      drawContain(ctx, bitmap, width, height, '#000000');
+      return;
+    }
+    if (spec.type === 'imageText') {
+      drawCover(ctx, bitmap, width, height);
+      ctx.fillStyle = `rgba(0,0,0,${spec.overlay})`;
+      ctx.fillRect(0, 0, width, height);
+      renderTextLayer(ctx, spec, width, height, false);
+      return;
+    }
+    ctx.fillStyle = spec.bgColor;
+    ctx.fillRect(0, 0, width, height);
+    renderTextLayer(ctx, spec, width, height, true);
+  } finally {
+    if (ownsBitmap) bitmap?.close();
+  }
+}
+
+function renderTextLayer(ctx, spec, width, height, drawBorder) {
+  const paddingX = Math.round(width * 0.10);
+  const paddingY = Math.round(height * 0.10);
+  const contentWidth = width - 2 * paddingX;
+  const contentHeight = height - 2 * paddingY;
+  const family = getFontFamily(spec.fontPreset);
+  const bodyWeight = spec.fontPreset === 'gothic' ? 700 : 600;
+  const titleWeight = spec.fontPreset === 'gothic' ? 800 : 700;
+  if (spec.layoutMode === 'titleBody') {
+    const gap = Math.round(height * .04);
+    // タイトル領域を十分に確保する。100%はこの領域内で最大限きれいに収まるサイズ。
+    const titleH = Math.round(contentHeight * .38), bodyH = contentHeight - titleH - gap;
+    const titleParas = normalizeParagraphs(spec.title).filter(x => x.trim());
+    const bodyParas = normalizeParagraphs(spec.body);
+    // 100% = そのテキストが各領域に気持ちよく収まる最大サイズ。
+    // 50〜300% は、その自動算出サイズに対する倍率として扱う。
+    const titleAuto = titleParas.length ? fitTextLayout(ctx, titleParas, contentWidth, titleH, family, titleWeight, Math.max(1.05, spec.lineHeightRatio-.15), 12, Math.round(Math.min(width,height)*0.75)) : null;
+    const bodyAuto = bodyParas.some(x => x.trim()) ? fitTextLayout(ctx, bodyParas, contentWidth, bodyH, family, bodyWeight, spec.lineHeightRatio, 12, Math.round(Math.min(width,height)*0.55)) : null;
+    const titleLayout = titleAuto ? layoutParagraphs(ctx, titleParas, Math.max(12, Math.round(titleAuto.fontSize * spec.titleFontScale)), family, titleWeight, contentWidth, Math.max(1.05, spec.lineHeightRatio-.15)) : null;
+    const bodyLayout = bodyAuto ? layoutParagraphs(ctx, bodyParas, Math.max(12, Math.round(bodyAuto.fontSize * spec.bodyFontScale)), family, bodyWeight, contentWidth, spec.lineHeightRatio) : null;
+    const x = anchorX(spec.align, width, paddingX);
+    if (titleLayout) drawTextLines(ctx, titleLayout, x, paddingY, spec.align, family, titleWeight, spec.textColor);
+    if (bodyLayout) drawTextLines(ctx, bodyLayout, x, paddingY + titleH + gap, spec.align, family, bodyWeight, spec.textColor);
+  } else {
+    const paras = normalizeParagraphs(spec.body);
+    // 本文のみでも、100%は「領域内に最大限きれいに収まるサイズ」。
+    const autoLayout = fitTextLayout(ctx, paras, contentWidth, contentHeight, family, bodyWeight, spec.lineHeightRatio, 12, Math.round(Math.min(width,height)*0.75));
+    const layout = layoutParagraphs(ctx, paras, Math.max(12, Math.round(autoLayout.fontSize * spec.bodyFontScale)), family, bodyWeight, contentWidth, spec.lineHeightRatio);
+    drawTextLines(ctx, layout, anchorX(spec.align,width,paddingX), Math.round((height-layout.totalHeight)/2), spec.align, family, bodyWeight, spec.textColor);
+  }
+}
+
+function fitTextLayout(ctx, paragraphs, contentWidth, contentHeight, family, weight, lineRatio, minSize, maxSize) {
+  let low=minSize, high=maxSize, best=null;
+  while (low<=high) {
+    const size=Math.floor((low+high)/2);
+    const c=layoutParagraphs(ctx,paragraphs,size,family,weight,contentWidth,lineRatio);
+    // 100%の自動サイズは、明示改行を維持したまま横幅・高さの両方に収まる最大値。
+    if (c.totalHeight<=contentHeight && c.maxLineWidth<=contentWidth) { best=c; low=size+1; }
+    else high=size-1;
+  }
+  return best || layoutParagraphs(ctx,paragraphs,minSize,family,weight,contentWidth,lineRatio);
+}
+function layoutParagraphs(ctx, paragraphs, size, family, weight, width, ratio) {
+  ctx.font=`${weight} ${size}px ${family}`;
+  const lineHeight=Math.round(size*ratio);
+  // 自動折り返しは一切しない。ユーザーが入力した改行だけを行として扱う。
+  const lines=[...paragraphs];
+  while(lines.length&&lines.at(-1)==='') lines.pop();
+  if(!lines.length) lines.push('');
+  let maxLineWidth=0;
+  for(const line of lines) maxLineWidth=Math.max(maxLineWidth,ctx.measureText(line).width);
+  return { fontSize:size, lineHeight, lines, totalHeight:lines.length*lineHeight, maxLineWidth };
+}
+function normalizeParagraphs(t){return String(t||'').replace(/\r\n/g,'\n').split('\n');}
+function drawTextLines(ctx, layout, x, y, align, family, weight, color){ctx.fillStyle=color;ctx.textBaseline='top';ctx.textAlign=align;ctx.font=`${weight} ${layout.fontSize}px ${family}`;for(const line of layout.lines){ctx.fillText(line,x,y);y+=layout.lineHeight;}}
+function anchorX(align,w,p){return align==='left'?p:align==='right'?w-p:w/2;}
+function getFontFamily(p){return p==='mincho'?'"Yu Mincho","Hiragino Mincho ProN","BIZ UDPMincho","Noto Serif JP",serif':'"Hiragino Sans","Yu Gothic","Meiryo","BIZ UDPGothic","Noto Sans JP",sans-serif';}
+function drawContain(ctx,img,w,h,bg){ctx.fillStyle=bg;ctx.fillRect(0,0,w,h);const s=Math.min(w/img.width,h/img.height),dw=img.width*s,dh=img.height*s;ctx.drawImage(img,(w-dw)/2,(h-dh)/2,dw,dh);}
+function drawCover(ctx,img,w,h){const s=Math.max(w/img.width,h/img.height),dw=img.width*s,dh=img.height*s;ctx.drawImage(img,(w-dw)/2,(h-dh)/2,dw,dh);}
+function roundedRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+function colorWithAlpha(hex,a){const n=hex.replace('#','').padEnd(6,'0').slice(0,6);return `rgba(${parseInt(n.slice(0,2),16)},${parseInt(n.slice(2,4),16)},${parseInt(n.slice(4,6),16)},${a})`;}
+function drawPreviewPlaceholder(ctx,w,h,msg){ctx.fillStyle='#1a1a1a';ctx.fillRect(0,0,w,h);ctx.fillStyle='#fff';ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=`600 ${Math.max(20,Math.round(Math.min(w,h)*.035))}px ${getFontFamily('gothic')}`;ctx.fillText(msg,w/2,h/2);}
+function waitForDequeue(codec){return new Promise(r=>codec.addEventListener('dequeue',r,{once:true}));}
+  </script>
+</body>
+</html>
